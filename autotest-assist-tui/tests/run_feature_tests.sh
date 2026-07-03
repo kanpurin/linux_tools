@@ -649,6 +649,10 @@ test_editor_source() {
   grep -Fq 'editor_dirty' "$SRC" &&
   grep -Fq 'strcmp(app->editor_command, "w")' "$SRC" &&
   grep -Fq 'strcmp(app->editor_command, "q!")' "$SRC" &&
+  grep -Fq 'ch == 19' "$SRC" &&
+  grep -Fq 'ch == 17' "$SRC" &&
+  grep -Fq ':w/Ctrl-S save' "$SRC" &&
+  grep -Fq ':q/Ctrl-Q quit' "$SRC" &&
   grep -Fq 'E37: No write since last change (add ! to override)' "$SRC" &&
   grep -Fq 'set_editor_written_status' "$SRC" &&
   grep -Fq 'editor_try_tab_completion' "$SRC" &&

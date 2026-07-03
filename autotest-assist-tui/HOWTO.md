@@ -51,9 +51,34 @@ state=$(systemctl is-active ssh)
 | `@evidence-capture` | Write evidence and capture stdout, stderr, and status | `@evidence-capture command` |
 | `@evidence-comment` | Write a comment line to evidence | `@evidence-comment text` |
 
-Directives are line-oriented. `@capture` is a one-line command directive. For
-multi-line command logic, put the multi-line logic in normal Bash and assign a
-variable, or use `sh -c '...'` / `bash -c '...'`.
+Directives are line-oriented. `@capture` is a one-line command directive.
+Do not wrap simple commands in `sh -c` or `bash -c`; write the command directly.
+
+Good:
+
+```sh
+@capture ./test.sh /etc/conf
+@check AUTOTEST_STATUS exact 0
+```
+
+Avoid unnecessary wrappers:
+
+```sh
+@capture sh -c './test.sh /etc/conf'
+```
+
+For loops and conditionals, write normal Bash and put AutoTest directives inside
+the block:
+
+```sh
+for tc in testcase1 testcase2 testcase3; do
+  @capture ./test.sh "$tc"
+  @check AUTOTEST_STATUS exact 0
+done
+```
+
+Use `sh -c '...'` or `bash -c '...'` only when several shell commands must be
+captured as one single `@capture` result.
 
 ## Match Types
 
@@ -414,8 +439,11 @@ actual=$(cat /tmp/testfile)
 ## Things to Avoid
 
 - Do not invent directives.
-- Do not use `@capture` for multi-line shell syntax unless wrapped in
-  `sh -c '...'` or `bash -c '...'`.
+- Do not wrap simple commands in `sh -c` or `bash -c`.
+- Do not use `sh -c` or `bash -c` for loops or conditionals just because they
+  span multiple lines. Write normal Bash and place AutoTest directives inside.
+- Use `sh -c '...'` or `bash -c '...'` only when multiple commands must be
+  captured as one single `@capture` result.
 - Do not rely on raw TUI transcripts unless the test intentionally checks raw
   terminal output.
 - Do not rely on `runlevel`, `who -r`, `who`, `w`, or `users` immediately after

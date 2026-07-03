@@ -291,7 +291,7 @@ static const char *EDITOR_HELP_LINES[] = {
     "unknown option                  Show usage and exit with error.",
     "",
     "Editor normal mode",
-    "i insert, :w save, :wq save quit, :q quit, :q! quit without save.",
+    "i insert, :w/Ctrl-S save, :wq save quit, :q/Ctrl-Q quit, :q! quit without save.",
     "dd / dNd delete lines, yy / yNy copy lines, p / P paste.",
     "v visual chars, V visual lines, y copy selection, d delete selection.",
     "u undo, gg / G / nG jump, /word search, n / N next/previous.",
@@ -2289,7 +2289,7 @@ static void open_text_editor(App *app, EditorTarget target, Screen return_screen
     load_editor_from_case(app);
     app->screen = SCREEN_SCRIPT_EDITOR;
     app->selected_menu = 0;
-    set_status(app, "Text editor: i insert, Esc normal, :w save, :wq save quit, :q! discard.");
+    set_status(app, "Text editor: i insert, Esc normal, :w/Ctrl-S save, :q/Ctrl-Q quit, :q! discard.");
 }
 
 static void open_script_editor(App *app) {
@@ -2379,6 +2379,30 @@ static bool save_current_editor(App *app, bool exit_after_save) {
     set_editor_written_status(app, editor_target_name(app->editor_target));
     if (exit_after_save) app->screen = app->previous_screen;
     return true;
+}
+
+static void editor_cancel_command_inputs(App *app) {
+    app->editor_command_mode = false;
+    app->editor_command_len = 0;
+    app->editor_command[0] = '\0';
+    app->editor_search_mode = false;
+    app->editor_search_len = 0;
+    app->editor_search[0] = '\0';
+}
+
+static void editor_write_shortcut(App *app) {
+    editor_cancel_command_inputs(app);
+    save_current_editor(app, false);
+}
+
+static void editor_quit_shortcut(App *app) {
+    editor_cancel_command_inputs(app);
+    if (editor_has_unsaved_changes(app)) {
+        set_status(app, "E37: No write since last change (add ! to override)");
+    } else {
+        app->screen = app->previous_screen;
+        set_status(app, "Canceled script editor.");
+    }
 }
 
 static void shell_quote(FILE *f, const char *s) {
@@ -4499,7 +4523,11 @@ static void handle_script_editor_key(App *app, int ch) {
             return;
         }
 
-        if (ch == 27) {
+        if (ch == 19) {
+            editor_write_shortcut(app);
+        } else if (ch == 17) {
+            editor_quit_shortcut(app);
+        } else if (ch == 27) {
             if (!editor_handle_escape_sequence(app)) {
                 app->editor_insert = false;
                 curs_set(0);
@@ -4566,6 +4594,15 @@ static void handle_script_editor_key(App *app, int ch) {
                 app->editor_help_scroll = max_scroll;
             }
         }
+        return;
+    }
+
+    if (ch == 19) {
+        editor_write_shortcut(app);
+        return;
+    }
+    if (ch == 17) {
+        editor_quit_shortcut(app);
         return;
     }
 

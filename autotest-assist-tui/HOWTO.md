@@ -359,6 +359,34 @@ itself in the comment; the command line is already written by `@evidence` or
 When you need to show resolved variable values such as paths, prefer
 `@evidence-vars` instead of `@evidence echo "$var"`.
 
+Place `@evidence-vars` immediately after the variables are assigned. Use it for
+resolved paths, expected values, and test parameters. Do not use it as evidence
+for produced files or command results; show produced artifacts with `@evidence`
+instead:
+
+```sh
+tmpdir=$(mktemp -d)
+outfile="$tmpdir/result.txt"
+expected="$(pwd)"
+@evidence-vars tmpdir outfile expected
+
+@evidence-comment run test.sh
+@evidence-capture ./test.sh "$outfile"
+@check AUTOTEST_STATUS exact 0
+
+@evidence-comment written file
+@evidence cat "$outfile"
+actual=$(cat "$outfile")
+content_ok=no
+[ "$actual" = "$expected" ] && content_ok=yes
+@check content_ok exact yes
+```
+
+Do not record routine setup or cleanup commands such as `rm -f "$outfile"` or
+`rm -rf "$tmpdir"` unless they are meaningful test preconditions. Prefer a clear
+comment such as `@evidence-comment run test.sh` over vague comments like
+`@evidence-comment prepare`.
+
 | Directive | Runs command | Writes evidence | Updates `AUTOTEST_*` |
 |---|---:|---:|---:|
 | `@evidence` | yes | yes, when `--evidence` is used | no |

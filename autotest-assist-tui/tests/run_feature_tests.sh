@@ -592,6 +592,11 @@ test_evidence_source() {
   grep -Fq '@evidence-capture command' "$HOWTO" &&
   grep -Fq '@evidence-vars VAR...' "$HOWTO" &&
   grep -Fq '@evidence-vars script_path outfile expected' "$HOWTO" &&
+  grep -Fq 'Place `@evidence-vars` immediately after the variables are assigned' "$HOWTO" &&
+  grep -Fq 'Do not use it as evidence' "$HOWTO" &&
+  grep -Fq 'for produced files or command results' "$HOWTO" &&
+  grep -Fq '@evidence cat "$outfile"' "$HOWTO" &&
+  grep -Fq 'Do not record routine setup or cleanup commands' "$HOWTO" &&
   grep -Fq '@evidence-capture ./test.sh /etc/conf' "$HOWTO" &&
   grep -Fq '# exit status: N' "$HOWTO" &&
   grep -Fq 'Default style for tests that modify a path' "$HOWTO"

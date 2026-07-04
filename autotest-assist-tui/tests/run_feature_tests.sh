@@ -224,7 +224,9 @@ int main(void) {
     tc.expected_exit = 0;
     set_test_command(&tc,
         "VALUE=hello\\n"
+        "EMPTY=\\n"
         "@evidence-comment capture value\\n"
+        "@evidence-vars VALUE EMPTY MISSING\\n"
         "@evidence echo \$VALUE\\n"
         "@evidence sh -c 'echo side-effect > evidence_side_effect'\\n"
         "TEST=ok\\n"
@@ -244,6 +246,11 @@ EOF
     [ "$(cat evidence_side_effect)" = "side-effect" ] &&
     grep -Fq '# TEST TC997 evidence_case START ' evidence.log &&
     grep -Fq '# capture value' evidence.log &&
+    grep -Fq '# variables' evidence.log &&
+    grep -Fq 'VALUE=hello' evidence.log &&
+    grep -Fxq 'EMPTY=' evidence.log &&
+    grep -Fq 'MISSING=<unset>' evidence.log &&
+    ! grep -Fq '@evidence-vars' evidence.log &&
     grep -Eq '^\[[^]]+@[^]]+:autotest-assist-feature-tests\.[^]]+\]# echo \$VALUE$' evidence.log &&
     grep -Fq 'hello' evidence.log &&
     ! grep -Fq 'Summary:' evidence.log &&
@@ -270,7 +277,8 @@ int main(void) {
         "@evidence-capture sh -c 'printf out; printf err >&2; exit 7'\\n"
         "@check AUTOTEST_STDOUT exact out\\n"
         "@check AUTOTEST_STDERR exact err\\n"
-        "@check AUTOTEST_STATUS exact 7\\n");
+        "@check AUTOTEST_STATUS exact 7\\n"
+        "@evidence-capture printf 'line\\\\n'\\n");
     return write_single_test_script(&tc);
 }
 EOF
@@ -285,6 +293,7 @@ EOF
     grep -Fq 'out' evidence_capture.log &&
     grep -Fq 'err' evidence_capture.log &&
     grep -Fq '# exit status: 7' evidence_capture.log &&
+    awk 'prev=="line" && $0=="# exit status: 0" { found=1 } { prev=$0 } END { exit found ? 0 : 1 }' evidence_capture.log &&
     grep -Fq 'actual_1=out' evidence_capture.detail &&
     grep -Fq 'actual_2=err' evidence_capture.detail &&
     grep -Fq 'actual_3=7' evidence_capture.detail
@@ -544,6 +553,7 @@ test_backup_restore_source() {
 test_evidence_source() {
   grep -Fq '@evidence <command>' "$SRC" &&
   grep -Fq '@evidence-capture <command>' "$SRC" &&
+  grep -Fq '@evidence-vars <vars...>' "$SRC" &&
   grep -Fq '@evidence-comment <text>' "$SRC" &&
   grep -Fq -- '--evidence <path>' "$SRC" &&
   grep -Fq -- '--evidence)' "$SRC" &&
@@ -552,10 +562,16 @@ test_evidence_source() {
   grep -Fq 'autotest_evidence_prompt()' "$SRC" &&
   grep -Fq "printf '[%s@%s:%s]# '" "$SRC" &&
   grep -Fq 'autotest_evidence_comment()' "$SRC" &&
+  grep -Fq 'autotest_evidence_vars()' "$SRC" &&
+  grep -Fq '# variables' "$SRC" &&
+  grep -Fq '<unset>' "$SRC" &&
+  grep -Fq 'validate_evidence_vars_directive' "$SRC" &&
   grep -Fq 'autotest_evidence_test_start()' "$SRC" &&
   grep -Fq 'autotest_evidence_reboot()' "$SRC" &&
   grep -Fq 'autotest_evidence_resume()' "$SRC" &&
   grep -Fq 'autotest_evidence_capture()' "$SRC" &&
+  grep -Fq 'autotest_file_ends_with_newline()' "$SRC" &&
+  grep -Fq 'tail -c 1' "$SRC" &&
   grep -Fq 'eval \"$cmd\"' "$SRC" &&
   grep -Fq '( set +u; eval \"$cmd\" ) >/dev/null 2>&1' "$SRC" &&
   grep -Fq 'cat \"$AUTOTEST_STDOUT_FILE\" >>\"$EVIDENCE_FILE\"' "$SRC" &&
@@ -563,14 +579,19 @@ test_evidence_source() {
   grep -Fq 'evidence_file' "$SRC" &&
   grep -Fq '@evidence requires a command' "$SRC" &&
   grep -Fq '@evidence-capture requires a command' "$SRC" &&
+  grep -Fq '@evidence-vars requires at least one variable name' "$SRC" &&
+  grep -Fq '@evidence-vars variable name is invalid' "$SRC" &&
   grep -Fq '@evidence-comment requires text' "$SRC" &&
   grep -Fq 'Evidence Output' "$README" &&
   grep -Fq '@evidence-comment <text>' "$README" &&
   grep -Fq '@evidence <command>' "$README" &&
   grep -Fq '@evidence-capture <command>' "$README" &&
+  grep -Fq '@evidence-vars <vars...>' "$README" &&
   grep -Fq '# exit status: N' "$README" &&
   grep -Fq '[root@osboxes:autotest-assist-tui]#' "$README" &&
   grep -Fq '@evidence-capture command' "$HOWTO" &&
+  grep -Fq '@evidence-vars VAR...' "$HOWTO" &&
+  grep -Fq '@evidence-vars script_path outfile expected' "$HOWTO" &&
   grep -Fq '@evidence-capture ./test.sh /etc/conf' "$HOWTO" &&
   grep -Fq '# exit status: N' "$HOWTO" &&
   grep -Fq 'Default style for tests that modify a path' "$HOWTO"
@@ -903,6 +924,10 @@ int main(void) {
     app.editor_col = (int)strlen(app.editor_lines[0]);
     if (!editor_try_tab_completion(&app)) return 73;
     if (strcmp(app.editor_lines[0], "@capture ") != 0) return 74;
+    load_editor_text(&app, "@evidence-v");
+    app.editor_col = (int)strlen(app.editor_lines[0]);
+    if (!editor_try_tab_completion(&app)) return 76;
+    if (strcmp(app.editor_lines[0], "@evidence-vars ") != 0) return 77;
     load_editor_text(&app, "  @tu");
     app.editor_col = (int)strlen(app.editor_lines[0]);
     if (!editor_try_tab_completion(&app)) return 26;
@@ -1048,6 +1073,9 @@ int main(void) {
     if (expect_valid("@capture printf ok\n@check AUTOTEST_STDOUT exact ok\n")) return 9;
     if (expect_invalid_line("@evidence-capture\n", 1)) return 10;
     if (expect_valid("@evidence-capture printf ok\n@check AUTOTEST_STDOUT exact ok\n")) return 11;
+    if (expect_invalid_line("@evidence-vars\n", 1)) return 12;
+    if (expect_invalid_line("@evidence-vars 1BAD\n", 1)) return 13;
+    if (expect_valid("VALUE=ok\n@evidence-vars VALUE MISSING\n")) return 14;
     if (!validate_script_syntax("if true; then\n  echo ok\n", &(SyntaxError){0})) return 0;
     return 7;
 }

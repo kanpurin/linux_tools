@@ -251,6 +251,7 @@ static const char *EDITOR_HELP_LINES[] = {
     "@capture <command>              Capture stdout/stderr/status variables.",
     "@evidence-capture <command>     Capture and write prompted evidence.",
     "@evidence <command>             Record prompted command output in evidence.",
+    "@evidence-vars <vars...>        Record resolved variable values.",
     "@evidence-comment <text>        Record an evidence comment line.",
     "",
     "TUI automation",
@@ -1508,6 +1509,10 @@ static void write_command_expanded(FILE *f, const char *command) {
                 fputs("autotest_evidence_capture ", f);
                 shell_quote(f, directive_arg);
                 fputc('\n', f);
+            } else if (line_starts_directive(p, len, "@evidence-vars", directive_arg, sizeof(directive_arg))) {
+                fputs("autotest_evidence_vars ", f);
+                shell_quote(f, directive_arg);
+                fputc('\n', f);
             } else if (line_starts_directive(p, len, "@evidence", directive_arg, sizeof(directive_arg))) {
                 fputs("autotest_evidence ", f);
                 shell_quote(f, directive_arg);
@@ -1643,6 +1648,25 @@ static bool validate_check_directive(const char *arg, int line_no, SyntaxError *
     return true;
 }
 
+static bool validate_evidence_vars_directive(const char *arg, int line_no, SyntaxError *err) {
+    char buf[LONG_LEN];
+    char *name;
+    copy_text(buf, sizeof(buf), arg);
+    name = strtok(buf, " \t");
+    if (!name) {
+        set_syntax_error(err, line_no, "@evidence-vars requires at least one variable name");
+        return false;
+    }
+    while (name) {
+        if (!is_valid_var_name(name)) {
+            set_syntax_error(err, line_no, "@evidence-vars variable name is invalid");
+            return false;
+        }
+        name = strtok(NULL, " \t");
+    }
+    return true;
+}
+
 static bool validate_tui_instruction(const char *line, size_t len, int line_no, SyntaxError *err) {
     char trimmed[LONG_LEN];
     char decoded[LONG_LEN];
@@ -1773,6 +1797,11 @@ static bool validate_custom_syntax(const char *command, SyntaxError *err) {
                 /* Captured evidence commands are run once and checked later. */
             } else if (trimmed_has_directive(trimmed, "@evidence-capture")) {
                 set_syntax_error(err, line_no, "@evidence-capture requires a command");
+                return false;
+            } else if (line_starts_directive(p, len, "@evidence-vars", directive_arg, sizeof(directive_arg))) {
+                if (!validate_evidence_vars_directive(directive_arg, line_no, err)) return false;
+            } else if (trimmed_has_directive(trimmed, "@evidence-vars")) {
+                set_syntax_error(err, line_no, "@evidence-vars requires at least one variable name");
                 return false;
             } else if (line_starts_directive(p, len, "@evidence", directive_arg, sizeof(directive_arg))) {
                 /* Evidence commands are run only when --evidence is used. */
@@ -3674,8 +3703,8 @@ static void completion_add(App *app, const char *item, const char *prefix) {
 static bool editor_build_completion(App *app) {
     static const char *directives[] = {
         "@check ", "@assert ", "@backup ", "@restore ", "@capture ",
-        "@evidence ", "@evidence-capture ", "@evidence-comment ", "@tui ",
-        "@reboot-if "
+        "@evidence ", "@evidence-capture ", "@evidence-vars ",
+        "@evidence-comment ", "@tui ", "@reboot-if "
     };
     static const char *tui_commands[] = {
         "send ", "text ", "enter", "esc", "tab", "space", "sleep ", "ctrl ",
@@ -5119,6 +5148,20 @@ static void write_match_function(FILE *f) {
     fputs("  [ -n \"${EVIDENCE_FILE:-}\" ] || return 0\n", f);
     fputs("  printf '# %s\\n' \"$*\" >>\"$EVIDENCE_FILE\"\n", f);
     fputs("}\n\n", f);
+    fputs("autotest_evidence_vars() {\n", f);
+    fputs("  [ -n \"${EVIDENCE_FILE:-}\" ] || return 0\n", f);
+    fputs("  local names=\"$1\"\n", f);
+    fputs("  local name\n", f);
+    fputs("  printf '# variables\\n' >>\"$EVIDENCE_FILE\"\n", f);
+    fputs("  for name in $names; do\n", f);
+    fputs("    case \"$name\" in ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) printf '%s=<invalid>\\n' \"$name\" >>\"$EVIDENCE_FILE\"; continue ;; esac\n", f);
+    fputs("    if [ \"${!name+x}\" = x ]; then\n", f);
+    fputs("      printf '%s=%s\\n' \"$name\" \"${!name}\" >>\"$EVIDENCE_FILE\"\n", f);
+    fputs("    else\n", f);
+    fputs("      printf '%s=<unset>\\n' \"$name\" >>\"$EVIDENCE_FILE\"\n", f);
+    fputs("    fi\n", f);
+    fputs("  done\n", f);
+    fputs("}\n\n", f);
     fputs("autotest_evidence_test_start() {\n", f);
     fputs("  [ -n \"${EVIDENCE_FILE:-}\" ] || return 0\n", f);
     fputs("  printf '# TEST %s %s START %s\\n' \"$1\" \"$2\" \"$(date '+%Y-%m-%d %H:%M:%S')\" >>\"$EVIDENCE_FILE\"\n", f);
@@ -5139,6 +5182,10 @@ static void write_match_function(FILE *f) {
     fputs("    ( set +u; eval \"$cmd\" ) >/dev/null 2>&1\n", f);
     fputs("  fi\n", f);
     fputs("  return 0\n", f);
+    fputs("}\n\n", f);
+    fputs("autotest_file_ends_with_newline() {\n", f);
+    fputs("  [ -s \"$1\" ] || return 0\n", f);
+    fputs("  [ \"$(tail -c 1 \"$1\" 2>/dev/null | od -An -t u1 | tr -d ' ')\" = 10 ]\n", f);
     fputs("}\n\n", f);
     fputs("autotest_capture() {\n", f);
     fputs("  local cmd=\"$1\"\n", f);
@@ -5167,7 +5214,13 @@ static void write_match_function(FILE *f) {
     fputs("  AUTOTEST_STDOUT=\"$(cat \"$AUTOTEST_STDOUT_FILE\" 2>/dev/null || true)\"\n", f);
     fputs("  AUTOTEST_STDERR=\"$(cat \"$AUTOTEST_STDERR_FILE\" 2>/dev/null || true)\"\n", f);
     fputs("  export AUTOTEST_CAPTURE_INDEX AUTOTEST_CAPTURE_DIR AUTOTEST_STATUS AUTOTEST_STDOUT AUTOTEST_STDERR AUTOTEST_STDOUT_FILE AUTOTEST_STDERR_FILE\n", f);
-    fputs("  if [ -n \"${EVIDENCE_FILE:-}\" ]; then [ -f \"$AUTOTEST_STDOUT_FILE\" ] && cat \"$AUTOTEST_STDOUT_FILE\" >>\"$EVIDENCE_FILE\"; [ -f \"$AUTOTEST_STDERR_FILE\" ] && cat \"$AUTOTEST_STDERR_FILE\" >>\"$EVIDENCE_FILE\"; printf '\\n# exit status: %s\\n' \"$AUTOTEST_STATUS\" >>\"$EVIDENCE_FILE\"; fi\n", f);
+    fputs("  if [ -n \"${EVIDENCE_FILE:-}\" ]; then\n", f);
+    fputs("    last_output_file=\"\"\n", f);
+    fputs("    if [ -s \"$AUTOTEST_STDOUT_FILE\" ]; then cat \"$AUTOTEST_STDOUT_FILE\" >>\"$EVIDENCE_FILE\"; last_output_file=\"$AUTOTEST_STDOUT_FILE\"; fi\n", f);
+    fputs("    if [ -s \"$AUTOTEST_STDERR_FILE\" ]; then cat \"$AUTOTEST_STDERR_FILE\" >>\"$EVIDENCE_FILE\"; last_output_file=\"$AUTOTEST_STDERR_FILE\"; fi\n", f);
+    fputs("    if [ -n \"$last_output_file\" ] && ! autotest_file_ends_with_newline \"$last_output_file\"; then printf '\\n' >>\"$EVIDENCE_FILE\"; fi\n", f);
+    fputs("    printf '# exit status: %s\\n' \"$AUTOTEST_STATUS\" >>\"$EVIDENCE_FILE\"\n", f);
+    fputs("  fi\n", f);
     fputs("  return 0\n", f);
     fputs("}\n\n", f);
     fputs("autotest_backup_key() { printf '%s' \"$1\" | cksum | awk '{print $1}'; }\n\n", f);

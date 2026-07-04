@@ -49,6 +49,7 @@ state=$(systemctl is-active ssh)
 | `@reboot-if` | Reboot only when a shell condition is true | `@reboot-if condition` |
 | `@evidence` | Write a prompted command and its output to evidence | `@evidence command` |
 | `@evidence-capture` | Write evidence and capture stdout, stderr, and status | `@evidence-capture command` |
+| `@evidence-vars` | Write resolved variable values to evidence | `@evidence-vars VAR...` |
 | `@evidence-comment` | Write a comment line to evidence | `@evidence-comment text` |
 
 Directives are line-oriented. `@capture` is a one-line command directive.
@@ -168,6 +169,29 @@ in the evidence log and update the same variables as `@capture`:
 `AUTOTEST_STDOUT_FILE`, and `AUTOTEST_STDERR_FILE`. When `--evidence` is used,
 it also writes the prompt, command, stdout, stderr, and `# exit status: N` to
 the evidence log.
+
+Use `@evidence-vars <vars...>` when the evidence should show resolved values
+without adding an extra prompted command line:
+
+```sh
+script_path="$(pwd)/test.sh"
+outfile="$tmpdir/result.txt"
+expected="$(pwd)"
+
+@evidence-comment resolved paths
+@evidence-vars script_path outfile expected
+```
+
+Evidence output:
+
+```text
+# variables
+script_path=/root/test.sh
+outfile=/tmp/tmp.xxxx/result.txt
+expected=/tmp/tmp.xxxx/work
+```
+
+`@evidence-vars` does not run a command and does not update `AUTOTEST_*`.
 
 ## TUI Automation
 
@@ -332,21 +356,26 @@ Use `@evidence-comment` as a short section label. Do not duplicate the command
 itself in the comment; the command line is already written by `@evidence` or
 `@evidence-capture`.
 
+When you need to show resolved variable values such as paths, prefer
+`@evidence-vars` instead of `@evidence echo "$var"`.
+
 | Directive | Runs command | Writes evidence | Updates `AUTOTEST_*` |
 |---|---:|---:|---:|
 | `@evidence` | yes | yes, when `--evidence` is used | no |
 | `@capture` | yes | no | yes |
 | `@evidence-capture` | yes | yes, when `--evidence` is used | yes |
+| `@evidence-vars` | no | yes, when `--evidence` is used | no |
 
 Default style for tests that modify a path:
 
 1. Back up the path with `@backup`.
 2. Prepare the file or configuration with `@evidence`.
-3. Record prepared state with `@evidence`.
-4. Run the command under test with `@evidence-capture` when its result should be
+3. Record resolved paths or expected values with `@evidence-vars`.
+4. Record prepared state with `@evidence`.
+5. Run the command under test with `@evidence-capture` when its result should be
    checked and logged.
-5. Check `AUTOTEST_STATUS`, `AUTOTEST_STDOUT`, or `AUTOTEST_STDERR`.
-6. Restore the path with `@restore`.
+6. Check `AUTOTEST_STATUS`, `AUTOTEST_STDOUT`, or `AUTOTEST_STDERR`.
+7. Restore the path with `@restore`.
 
 Example:
 

@@ -237,7 +237,9 @@ The prompted command line uses this format:
 stdout and stderr are discarded. When `--evidence` is specified, their output is
 written to the evidence file. Their exit status does not affect the test result.
 Use `@evidence-vars` to record expanded values such as resolved paths without
-adding an extra prompted command line to the evidence log.
+adding an extra prompted command line to the evidence log. Use
+`@evidence-vars "human label"=VAR` when the evidence should be readable without
+opening the script.
 Use `@evidence-capture` when the same command should also update
 `AUTOTEST_STDOUT`, `AUTOTEST_STDERR`, and `AUTOTEST_STATUS` for `@check`.
 `@evidence-capture` also appends `# exit status: N` to the evidence log.

@@ -227,6 +227,8 @@ int main(void) {
         "EMPTY=\\n"
         "@evidence-comment capture value\\n"
         "@evidence-vars VALUE EMPTY MISSING\\n"
+        "@evidence-comment labeled values\\n"
+        "@evidence-vars \"friendly value\"=VALUE \"empty label\"=EMPTY \"missing label\"=MISSING\\n"
         "@evidence echo \$VALUE\\n"
         "@evidence sh -c 'echo side-effect > evidence_side_effect'\\n"
         "TEST=ok\\n"
@@ -250,6 +252,11 @@ EOF
     grep -Fq 'VALUE=hello' evidence.log &&
     grep -Fxq 'EMPTY=' evidence.log &&
     grep -Fq 'MISSING=<unset>' evidence.log &&
+    grep -Fq '# labeled values' evidence.log &&
+    grep -Fq 'friendly value: hello' evidence.log &&
+    grep -Fxq 'empty label: ' evidence.log &&
+    grep -Fq 'missing label: <unset>' evidence.log &&
+    awk 'prev=="# labeled values" && $0=="friendly value: hello" { found=1 } { prev=$0 } END { exit found ? 0 : 1 }' evidence.log &&
     ! grep -Fq '@evidence-vars' evidence.log &&
     grep -Eq '^\[[^]]+@[^]]+:autotest-assist-feature-tests\.[^]]+\]# echo \$VALUE$' evidence.log &&
     grep -Fq 'hello' evidence.log &&
@@ -562,8 +569,10 @@ test_evidence_source() {
   grep -Fq 'autotest_evidence_prompt()' "$SRC" &&
   grep -Fq "printf '[%s@%s:%s]# '" "$SRC" &&
   grep -Fq 'autotest_evidence_comment()' "$SRC" &&
-  grep -Fq 'autotest_evidence_vars()' "$SRC" &&
+  grep -Fq 'autotest_evidence_vars_begin()' "$SRC" &&
+  grep -Fq 'autotest_evidence_var()' "$SRC" &&
   grep -Fq '# variables' "$SRC" &&
+  grep -Fq "printf '%s: %s" "$SRC" &&
   grep -Fq '<unset>' "$SRC" &&
   grep -Fq 'validate_evidence_vars_directive' "$SRC" &&
   grep -Fq 'autotest_evidence_test_start()' "$SRC" &&
@@ -587,15 +596,20 @@ test_evidence_source() {
   grep -Fq '@evidence <command>' "$README" &&
   grep -Fq '@evidence-capture <command>' "$README" &&
   grep -Fq '@evidence-vars <vars...>' "$README" &&
+  grep -Fq '@evidence-vars "human label"=VAR' "$README" &&
   grep -Fq '# exit status: N' "$README" &&
   grep -Fq '[root@osboxes:autotest-assist-tui]#' "$README" &&
   grep -Fq '@evidence-capture command' "$HOWTO" &&
   grep -Fq '@evidence-vars VAR...' "$HOWTO" &&
+  grep -Fq '@evidence-vars "label"=VAR' "$HOWTO" &&
   grep -Fq '@evidence-vars script_path outfile expected' "$HOWTO" &&
-  grep -Fq 'Place `@evidence-vars` immediately after the variables are assigned' "$HOWTO" &&
+  grep -Fq '@evidence-vars "current directory path"=expected "outfile content"=actual' "$HOWTO" &&
+  grep -Fq 'Do not dump unrelated setup variables at the top' "$HOWTO" &&
+  grep -Fq 'Place the variable evidence close to the command or check that uses it' "$HOWTO" &&
   grep -Fq 'Do not use it as evidence' "$HOWTO" &&
   grep -Fq 'for produced files or command results' "$HOWTO" &&
   grep -Fq '@evidence cat "$outfile"' "$HOWTO" &&
+  ! grep -Fq '@evidence-vars expected actual content_ok' "$HOWTO" &&
   grep -Fq 'Do not record routine setup or cleanup commands' "$HOWTO" &&
   grep -Fq '@evidence-capture ./test.sh /etc/conf' "$HOWTO" &&
   grep -Fq '# exit status: N' "$HOWTO" &&
@@ -1081,6 +1095,9 @@ int main(void) {
     if (expect_invalid_line("@evidence-vars\n", 1)) return 12;
     if (expect_invalid_line("@evidence-vars 1BAD\n", 1)) return 13;
     if (expect_valid("VALUE=ok\n@evidence-vars VALUE MISSING\n")) return 14;
+    if (expect_valid("VALUE=ok\n@evidence-vars \"friendly value\"=VALUE\n")) return 15;
+    if (expect_invalid_line("@evidence-vars \"friendly value\"=1BAD\n", 1)) return 16;
+    if (expect_invalid_line("@evidence-vars \"unterminated=VALUE\n", 1)) return 17;
     if (!validate_script_syntax("if true; then\n  echo ok\n", &(SyntaxError){0})) return 0;
     return 7;
 }

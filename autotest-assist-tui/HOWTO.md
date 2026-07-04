@@ -49,7 +49,7 @@ state=$(systemctl is-active ssh)
 | `@reboot-if` | Reboot only when a shell condition is true | `@reboot-if condition` |
 | `@evidence` | Write a prompted command and its output to evidence | `@evidence command` |
 | `@evidence-capture` | Write evidence and capture stdout, stderr, and status | `@evidence-capture command` |
-| `@evidence-vars` | Write resolved variable values to evidence | `@evidence-vars VAR...` |
+| `@evidence-vars` | Write resolved variable values to evidence | `@evidence-vars VAR...` or `@evidence-vars "label"=VAR...` |
 | `@evidence-comment` | Write a comment line to evidence | `@evidence-comment text` |
 
 Directives are line-oriented. `@capture` is a one-line command directive.
@@ -171,7 +171,8 @@ it also writes the prompt, command, stdout, stderr, and `# exit status: N` to
 the evidence log.
 
 Use `@evidence-vars <vars...>` when the evidence should show resolved values
-without adding an extra prompted command line:
+without adding an extra prompted command line. Use plain variable names for
+machine-like output, or `"label"=VAR` for human-readable evidence:
 
 ```sh
 script_path="$(pwd)/test.sh"
@@ -180,6 +181,7 @@ expected="$(pwd)"
 
 @evidence-comment resolved paths
 @evidence-vars script_path outfile expected
+@evidence-vars "script path"=script_path "output file"=outfile "expected current directory"=expected
 ```
 
 Evidence output:
@@ -189,6 +191,9 @@ Evidence output:
 script_path=/root/test.sh
 outfile=/tmp/tmp.xxxx/result.txt
 expected=/tmp/tmp.xxxx/work
+script path: /root/test.sh
+output file: /tmp/tmp.xxxx/result.txt
+expected current directory: /tmp/tmp.xxxx/work
 ```
 
 `@evidence-vars` does not run a command and does not update `AUTOTEST_*`.
@@ -359,18 +364,19 @@ itself in the comment; the command line is already written by `@evidence` or
 When you need to show resolved variable values such as paths, prefer
 `@evidence-vars` instead of `@evidence echo "$var"`.
 
-Place `@evidence-vars` immediately after the variables are assigned. Use it for
-resolved paths, expected values, and test parameters. Do not use it as evidence
-for produced files or command results; show produced artifacts with `@evidence`
-instead:
+Use `@evidence-vars` only for values that help explain the next evidence item or
+the next important check. Do not dump unrelated setup variables at the top of the
+test. Place the variable evidence close to the command or check that uses it.
+Do not use it as evidence for produced files or command results; show produced
+artifacts with `@evidence` instead:
 
 ```sh
 tmpdir=$(mktemp -d)
 outfile="$tmpdir/result.txt"
 expected="$(pwd)"
-@evidence-vars tmpdir outfile expected
 
 @evidence-comment run test.sh
+@evidence-vars "output file"=outfile "expected current directory"=expected
 @evidence-capture ./test.sh "$outfile"
 @check AUTOTEST_STATUS exact 0
 
@@ -379,6 +385,9 @@ expected="$(pwd)"
 actual=$(cat "$outfile")
 content_ok=no
 [ "$actual" = "$expected" ] && content_ok=yes
+
+@evidence-comment compare current directory path with outfile content
+@evidence-vars "current directory path"=expected "outfile content"=actual
 @check content_ok exact yes
 ```
 

@@ -27,6 +27,7 @@
 #define EDITOR_UNDO_DEPTH 32
 #define COMPLETION_MAX 16
 #define LEGACY_REGISTRY_CHECKS 4
+#define MAX_EVIDENCE_VARS 32
 
 typedef enum {
     SCREEN_DASHBOARD,
@@ -79,6 +80,12 @@ typedef struct {
     MatchType match;
     char expected[LONG_LEN];
 } CheckRule;
+
+typedef struct {
+    char label[TEXT_LEN];
+    char var[TEXT_LEN];
+    bool labeled;
+} EvidenceVarSpec;
 
 typedef struct {
     int line_no;
@@ -316,6 +323,9 @@ static bool set_test_command(TestCase *tc, const char *command);
 static bool command_looks_like_reboot(const char *cmd);
 static void trim_line_copy(char *dst, size_t dst_sz, const char *line, size_t len);
 static void copy_text(char *dst, size_t dst_sz, const char *src);
+static bool parse_evidence_vars_arg(const char *arg, EvidenceVarSpec *items, int *count,
+                                    char *err_msg, size_t err_sz);
+static void write_evidence_vars_expanded(FILE *f, const char *arg);
 static bool parse_check_arg(const char *arg, CheckRule *out, char *heredoc_delim, size_t heredoc_delim_sz);
 static void collect_check_heredoc(const char *body_start, const char *delim, char *out, size_t out_sz, const char **after);
 
@@ -1510,9 +1520,7 @@ static void write_command_expanded(FILE *f, const char *command) {
                 shell_quote(f, directive_arg);
                 fputc('\n', f);
             } else if (line_starts_directive(p, len, "@evidence-vars", directive_arg, sizeof(directive_arg))) {
-                fputs("autotest_evidence_vars ", f);
-                shell_quote(f, directive_arg);
-                fputc('\n', f);
+                write_evidence_vars_expanded(f, directive_arg);
             } else if (line_starts_directive(p, len, "@evidence", directive_arg, sizeof(directive_arg))) {
                 fputs("autotest_evidence ", f);
                 shell_quote(f, directive_arg);
@@ -1595,6 +1603,109 @@ static bool is_valid_var_name(const char *s) {
     return true;
 }
 
+static void evidence_vars_error(char *err_msg, size_t err_sz, const char *msg) {
+    if (err_msg && err_sz > 0) copy_text(err_msg, err_sz, msg);
+}
+
+static bool parse_evidence_vars_arg(const char *arg, EvidenceVarSpec *items, int *count,
+                                    char *err_msg, size_t err_sz) {
+    int n = 0;
+    const char *p = arg ? arg : "";
+    if (count) *count = 0;
+    while (isspace((unsigned char)*p)) p++;
+    while (*p) {
+        char token[LONG_LEN];
+        size_t j = 0;
+        char quote = '\0';
+        while (*p && (quote || !isspace((unsigned char)*p))) {
+            char c = *p++;
+            if (c == '\\' && *p) {
+                if (j + 1 >= sizeof(token)) {
+                    evidence_vars_error(err_msg, err_sz, "@evidence-vars argument is too long");
+                    return false;
+                }
+                token[j++] = *p++;
+            } else if ((c == '"' || c == '\'') && (quote == '\0' || quote == c)) {
+                quote = quote == c ? '\0' : c;
+            } else {
+                if (j + 1 >= sizeof(token)) {
+                    evidence_vars_error(err_msg, err_sz, "@evidence-vars argument is too long");
+                    return false;
+                }
+                token[j++] = c;
+            }
+        }
+        token[j] = '\0';
+        if (quote) {
+            evidence_vars_error(err_msg, err_sz, "@evidence-vars has an unterminated quote");
+            return false;
+        }
+        if (token[0]) {
+            char *eq;
+            if (n >= MAX_EVIDENCE_VARS) {
+                evidence_vars_error(err_msg, err_sz, "@evidence-vars has too many variables");
+                return false;
+            }
+            eq = strchr(token, '=');
+            memset(&items[n], 0, sizeof(items[n]));
+            if (eq) {
+                *eq++ = '\0';
+                if (!token[0]) {
+                    evidence_vars_error(err_msg, err_sz, "@evidence-vars label is empty");
+                    return false;
+                }
+                if (!is_valid_var_name(eq)) {
+                    evidence_vars_error(err_msg, err_sz, "@evidence-vars variable name is invalid");
+                    return false;
+                }
+                copy_text(items[n].label, sizeof(items[n].label), token);
+                copy_text(items[n].var, sizeof(items[n].var), eq);
+                items[n].labeled = true;
+            } else {
+                if (!is_valid_var_name(token)) {
+                    evidence_vars_error(err_msg, err_sz, "@evidence-vars variable name is invalid");
+                    return false;
+                }
+                copy_text(items[n].var, sizeof(items[n].var), token);
+            }
+            n++;
+        }
+        while (isspace((unsigned char)*p)) p++;
+    }
+    if (n == 0) {
+        evidence_vars_error(err_msg, err_sz, "@evidence-vars requires at least one variable name");
+        return false;
+    }
+    if (count) *count = n;
+    return true;
+}
+
+static void write_evidence_vars_expanded(FILE *f, const char *arg) {
+    EvidenceVarSpec items[MAX_EVIDENCE_VARS];
+    char err_msg[TEXT_LEN];
+    int count = 0;
+    bool has_unlabeled = false;
+    if (!parse_evidence_vars_arg(arg, items, &count, err_msg, sizeof(err_msg))) {
+        fputs("echo ", f);
+        shell_quote(f, "[NG] invalid @evidence-vars");
+        fputs(" >&2\nexit 1\n", f);
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        if (!items[i].labeled) has_unlabeled = true;
+    }
+    fputs("autotest_evidence_vars_begin ", f);
+    shell_quote(f, has_unlabeled ? "header" : "noheader");
+    fputc('\n', f);
+    for (int i = 0; i < count; i++) {
+        fputs("autotest_evidence_var ", f);
+        shell_quote(f, items[i].label);
+        fputc(' ', f);
+        shell_quote(f, items[i].var);
+        fputc('\n', f);
+    }
+}
+
 static bool trimmed_has_directive(const char *trimmed, const char *name) {
     size_t len = strlen(name);
     return strncmp(trimmed, name, len) == 0 &&
@@ -1649,20 +1760,12 @@ static bool validate_check_directive(const char *arg, int line_no, SyntaxError *
 }
 
 static bool validate_evidence_vars_directive(const char *arg, int line_no, SyntaxError *err) {
-    char buf[LONG_LEN];
-    char *name;
-    copy_text(buf, sizeof(buf), arg);
-    name = strtok(buf, " \t");
-    if (!name) {
-        set_syntax_error(err, line_no, "@evidence-vars requires at least one variable name");
+    EvidenceVarSpec items[MAX_EVIDENCE_VARS];
+    char err_msg[TEXT_LEN];
+    int count = 0;
+    if (!parse_evidence_vars_arg(arg, items, &count, err_msg, sizeof(err_msg))) {
+        set_syntax_error(err, line_no, err_msg);
         return false;
-    }
-    while (name) {
-        if (!is_valid_var_name(name)) {
-            set_syntax_error(err, line_no, "@evidence-vars variable name is invalid");
-            return false;
-        }
-        name = strtok(NULL, " \t");
     }
     return true;
 }
@@ -5148,19 +5251,23 @@ static void write_match_function(FILE *f) {
     fputs("  [ -n \"${EVIDENCE_FILE:-}\" ] || return 0\n", f);
     fputs("  printf '# %s\\n' \"$*\" >>\"$EVIDENCE_FILE\"\n", f);
     fputs("}\n\n", f);
-    fputs("autotest_evidence_vars() {\n", f);
+    fputs("autotest_evidence_vars_begin() {\n", f);
     fputs("  [ -n \"${EVIDENCE_FILE:-}\" ] || return 0\n", f);
-    fputs("  local names=\"$1\"\n", f);
-    fputs("  local name\n", f);
-    fputs("  printf '# variables\\n' >>\"$EVIDENCE_FILE\"\n", f);
-    fputs("  for name in $names; do\n", f);
-    fputs("    case \"$name\" in ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) printf '%s=<invalid>\\n' \"$name\" >>\"$EVIDENCE_FILE\"; continue ;; esac\n", f);
-    fputs("    if [ \"${!name+x}\" = x ]; then\n", f);
-    fputs("      printf '%s=%s\\n' \"$name\" \"${!name}\" >>\"$EVIDENCE_FILE\"\n", f);
+    fputs("  [ \"$1\" = header ] && printf '# variables\\n' >>\"$EVIDENCE_FILE\"\n", f);
+    fputs("}\n\n", f);
+    fputs("autotest_evidence_var() {\n", f);
+    fputs("  [ -n \"${EVIDENCE_FILE:-}\" ] || return 0\n", f);
+    fputs("  local label=\"$1\"\n", f);
+    fputs("  local name=\"$2\"\n", f);
+    fputs("  local value\n", f);
+    fputs("  case \"$name\" in ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) value='<invalid>' ;;\n", f);
+    fputs("    *) if [ \"${!name+x}\" = x ]; then value=\"${!name}\"; else value='<unset>'; fi ;;\n", f);
+    fputs("  esac\n", f);
+    fputs("  if [ -n \"$label\" ]; then\n", f);
+    fputs("    printf '%s: %s\\n' \"$label\" \"$value\" >>\"$EVIDENCE_FILE\"\n", f);
     fputs("    else\n", f);
-    fputs("      printf '%s=<unset>\\n' \"$name\" >>\"$EVIDENCE_FILE\"\n", f);
+    fputs("    printf '%s=%s\\n' \"$name\" \"$value\" >>\"$EVIDENCE_FILE\"\n", f);
     fputs("    fi\n", f);
-    fputs("  done\n", f);
     fputs("}\n\n", f);
     fputs("autotest_evidence_test_start() {\n", f);
     fputs("  [ -n \"${EVIDENCE_FILE:-}\" ] || return 0\n", f);

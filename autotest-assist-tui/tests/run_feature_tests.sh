@@ -604,6 +604,11 @@ test_evidence_source() {
   grep -Fq '@evidence-vars "label"=VAR' "$HOWTO" &&
   grep -Fq '@evidence-vars script_path outfile expected' "$HOWTO" &&
   grep -Fq '@evidence-vars "current directory path"=expected "outfile content"=actual' "$HOWTO" &&
+  grep -Fq 'Do not hide command execution inside `var=$(command)`' "$HOWTO" &&
+  grep -Fq '@evidence-capture ./test.sh "$outfile"' "$HOWTO" &&
+  grep -Fq '@evidence-vars "test.sh output"=result' "$HOWTO" &&
+  grep -Fq 'Do not leave only' "$HOWTO" &&
+  grep -Fq 'labeled comparison values' "$HOWTO" &&
   grep -Fq 'Do not dump unrelated setup variables at the top' "$HOWTO" &&
   grep -Fq 'Place the variable evidence close to the command or check that uses it' "$HOWTO" &&
   grep -Fq 'Do not use it as evidence' "$HOWTO" &&

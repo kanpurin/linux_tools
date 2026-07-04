@@ -155,6 +155,29 @@ done
 `AUTOTEST_STDOUT`, `AUTOTEST_STDERR`, and `AUTOTEST_STATUS` always contain the
 most recent `@capture` result.
 
+Do not hide command execution inside `var=$(command)` and then only check that
+variable. When stdout, stderr, or status is part of the test, prefer
+`@evidence-capture` so the evidence records the command, output, stderr, and
+exit status:
+
+```sh
+@evidence-comment run test.sh
+@evidence-capture ./test.sh "$outfile"
+@check AUTOTEST_STATUS exact 0
+@check AUTOTEST_STDOUT exact ok
+@check AUTOTEST_STDERR empty
+```
+
+If a command result must be assigned to a variable before checking, add nearby
+human-readable evidence that explains what the value means:
+
+```sh
+result=$(./test.sh "$outfile")
+@evidence-comment output from test.sh
+@evidence-vars "test.sh output"=result
+@check result exact ok
+```
+
 Use `@evidence-capture <command>` when the command under test should both appear
 in the evidence log and update the same variables as `@capture`:
 
@@ -395,6 +418,12 @@ Do not record routine setup or cleanup commands such as `rm -f "$outfile"` or
 `rm -rf "$tmpdir"` unless they are meaningful test preconditions. Prefer a clear
 comment such as `@evidence-comment run test.sh` over vague comments like
 `@evidence-comment prepare`.
+
+When checking a variable that came from a command or file, make sure the
+evidence also shows the source value in human terms. Do not leave only
+`@check result exact ...` or `@check content_ok exact yes`; evidence should show
+the command output, produced file, or labeled comparison values that explain why
+the check passed.
 
 | Directive | Runs command | Writes evidence | Updates `AUTOTEST_*` |
 |---|---:|---:|---:|

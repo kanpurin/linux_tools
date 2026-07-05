@@ -11,6 +11,11 @@ make
 `make` builds `autotest-builder` and then regenerates all test scripts currently
 registered in `~/.config/autotest-assist/tests.tsv`.
 
+## Terminal Line Drawing
+
+The TUI uses plain ASCII borders (`+`, `-`, and `|`) so it behaves consistently
+inside nested terminals such as `vim :term`, terminal split panes, and TeraTerm.
+
 ## Reboot and Rescue Limitations
 
 Reboot tests can run while systemd is still moving between targets. In that

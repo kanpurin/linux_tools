@@ -712,6 +712,18 @@ test_editor_source() {
   grep -Fq 'AUTOTEST_TUI_STDOUT_FILE' "$SRC" &&
   grep -Fq 'cursor_y + 1' "$SRC" &&
   grep -Fq 'draw_completion_window(app, height, width, first_row)' "$SRC" &&
+  grep -Fq 'ch == KEY_RESIZE' "$SRC" &&
+  grep -Fq 'clearok(stdscr, TRUE)' "$SRC" &&
+  grep -Fq 'width - x - 1' "$SRC" &&
+  grep -Fq 'draw_hline_ui' "$SRC" &&
+  grep -Fq 'draw_vline_ui' "$SRC" &&
+  grep -Fq 'draw_corner_ui' "$SRC" &&
+  grep -Fq "mvhline(y, x, '-', n)" "$SRC" &&
+  grep -Fq "mvvline(y, x, '|', n)" "$SRC" &&
+  grep -Fq "mvaddch(y, x, '+')" "$SRC" &&
+  ! grep -Fq 'ACS_' "$SRC" &&
+  ! grep -Fq '\342\224' "$SRC" &&
+  ! grep -Fq 'AUTOTEST_UI_LINES' "$SRC" &&
   grep -Fq 'if (app->editor_command_mode)' "$SRC" &&
   grep -Fq 'if (app->editor_search_mode)' "$SRC" &&
   grep -Fq 'if (app->screen == SCREEN_SCRIPT_EDITOR)' "$SRC" &&

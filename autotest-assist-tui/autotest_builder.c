@@ -6,6 +6,7 @@
 #include <locale.h>
 #include <ncurses.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,6 +75,13 @@ typedef enum {
     VISUAL_CHAR,
     VISUAL_LINE
 } VisualMode;
+
+typedef enum {
+    UI_CORNER_UL,
+    UI_CORNER_UR,
+    UI_CORNER_LL,
+    UI_CORNER_LR
+} UiCorner;
 
 typedef struct {
     char var[TEXT_LEN];
@@ -2748,20 +2756,46 @@ static void init_app(App *app) {
     set_status(app, "Ready.");
 }
 
+static void draw_hline_ui(int y, int x, int n) {
+    if (n <= 0) return;
+    mvhline(y, x, '-', n);
+}
+
+static void draw_vline_ui(int y, int x, int n) {
+    if (n <= 0) return;
+    mvvline(y, x, '|', n);
+}
+
+static void draw_corner_ui(int y, int x, UiCorner corner) {
+    (void)corner;
+    mvaddch(y, x, '+');
+}
+
 static void draw_box(int y, int x, int h, int w, const char *title) {
-    mvhline(y, x + 1, ACS_HLINE, w - 2);
-    mvhline(y + h - 1, x + 1, ACS_HLINE, w - 2);
-    mvvline(y + 1, x, ACS_VLINE, h - 2);
-    mvvline(y + 1, x + w - 1, ACS_VLINE, h - 2);
-    mvaddch(y, x, ACS_ULCORNER);
-    mvaddch(y, x + w - 1, ACS_URCORNER);
-    mvaddch(y + h - 1, x, ACS_LLCORNER);
-    mvaddch(y + h - 1, x + w - 1, ACS_LRCORNER);
-    if (title && *title) mvprintw(y, x + 2, " %.*s ", w - 6, title);
+    int term_h, term_w;
+    getmaxyx(stdscr, term_h, term_w);
+    if (y < 0 || x < 0 || h < 2 || w < 2 || y >= term_h || x >= term_w) return;
+    if (y + h > term_h) h = term_h - y;
+    if (x + w >= term_w) w = term_w - x - 1;
+    if (h < 2 || w < 2) return;
+    draw_hline_ui(y, x + 1, w - 2);
+    draw_hline_ui(y + h - 1, x + 1, w - 2);
+    draw_vline_ui(y + 1, x, h - 2);
+    draw_vline_ui(y + 1, x + w - 1, h - 2);
+    draw_corner_ui(y, x, UI_CORNER_UL);
+    draw_corner_ui(y, x + w - 1, UI_CORNER_UR);
+    draw_corner_ui(y + h - 1, x, UI_CORNER_LL);
+    draw_corner_ui(y + h - 1, x + w - 1, UI_CORNER_LR);
+    if (title && *title && w > 6) mvprintw(y, x + 2, " %.*s ", w - 6, title);
 }
 
 static void print_clip(int y, int x, int w, const char *text) {
     char buf[LONG_LEN];
+    int height, width;
+    (void)height;
+    getmaxyx(stdscr, height, width);
+    if (w > width - x - 1) w = width - x - 1;
+    if (w <= 0) return;
     snprintf(buf, sizeof(buf), "%s", text ? text : "");
     if ((int)strlen(buf) > w) {
         if (w > 3) {
@@ -2774,6 +2808,15 @@ static void print_clip(int y, int x, int w, const char *text) {
         }
     }
     mvprintw(y, x, "%-*s", w, buf);
+}
+
+static void print_clipf(int y, int x, int w, const char *fmt, ...) {
+    char buf[LONG_LEN];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    print_clip(y, x, w, buf);
 }
 
 static int draw_wrapped_text(int y, int x, int w, int max_rows, const char *text) {
@@ -2807,39 +2850,52 @@ static int draw_wrapped_text(int y, int x, int w, int max_rows, const char *text
 }
 
 static void draw_header(const App *app, int width) {
+    int fill_w = width > 1 ? width - 1 : width;
     attron(A_REVERSE);
-    mvprintw(0, 0, "%-*s", width, " AutoTest Builder - create tests, select tests, start automated test");
+    print_clip(0, 0, fill_w, " AutoTest Builder - create tests, select tests, start automated test");
     attroff(A_REVERSE);
-    mvprintw(1, 1, "Tests:%d  selected:%d  reboot:%s  cleanup:auto  saved-paths:%d",
-             app->project.case_count,
-             selected_count(&app->project),
-             has_reboot(&app->project) ? "yes" : "no",
-             selected_count(&app->project));
+    print_clipf(1, 1, width - 2, "Tests:%d  selected:%d  reboot:%s  cleanup:auto  saved-paths:%d",
+                app->project.case_count,
+                selected_count(&app->project),
+                has_reboot(&app->project) ? "yes" : "no",
+                selected_count(&app->project));
 }
 
 static void draw_status(const App *app, int y, int width) {
+    int fill_w = width > 1 ? width - 1 : width;
     attron(A_REVERSE);
-    mvprintw(y, 0, "%-*s", width, app->status);
+    print_clip(y, 0, fill_w, app->status);
     attroff(A_REVERSE);
 }
 
 static void draw_menu(int y, int x, int w, const char **items, int count, int selected) {
+    int term_h, term_w;
+    getmaxyx(stdscr, term_h, term_w);
+    if (y < 0 || y >= term_h || x < 0 || x >= term_w || w <= 0) return;
+    if (w > term_w - x - 1) w = term_w - x - 1;
+    if (w <= 0) return;
     for (int row = 0; row < 4; row++) {
+        if (y + row >= term_h - 1) break;
         mvhline(y + row, x, ' ', w);
     }
-    mvprintw(y, x, "Action Menu");
+    print_clip(y, x, w, "Action Menu");
     int cx = x;
+    int item_row = 1;
     for (int i = 0; i < count; i++) {
         char item[TEXT_LEN];
         snprintf(item, sizeof(item), " %s ", items[i]);
-        if (cx + (int)strlen(item) >= x + w) {
-            y++;
+        int item_len = (int)strlen(item);
+        if (cx > x && cx + item_len >= x + w) {
+            item_row++;
             cx = x;
         }
+        if (item_row >= 4 || y + item_row >= term_h - 1) break;
+        int available = x + w - cx;
+        if (available <= 0) break;
         if (i == selected) attron(A_REVERSE);
-        mvprintw(y + 1, cx, "%s", item);
+        print_clip(y + item_row, cx, available, item);
         if (i == selected) attroff(A_REVERSE);
-        cx += (int)strlen(item) + 1;
+        cx += item_len + 1;
     }
 }
 
@@ -2853,74 +2909,109 @@ static void draw_cases(const App *app, int y, int x, int h, int w) {
     }
     draw_box(y, x, h, w, title);
     int visible = h - 2;
+    int inner_w = w - 2;
+    if (inner_w <= 0) return;
     int row = 0;
     for (int i = 0; i < app->project.case_count && row < visible; i++) {
         const TestCase *tc = &app->project.cases[i];
         if (!case_matches_filter(tc, app->case_filter)) continue;
+        char line[LONG_LEN];
+        if (inner_w >= 52) {
+            int title_w = inner_w - 1 - 6 - 1 - 8 - 1 - 9;
+            if (title_w < 8) title_w = 8;
+            snprintf(line, sizeof(line), "%c %-5s %-*.*s %-7s %s",
+                     tc->selected ? '*' : ' ',
+                     tc->id,
+                     title_w, title_w, tc->title,
+                     command_kind_name(tc->kind),
+                     tc->script_path[0] ? "saved" : "not_saved");
+        } else if (inner_w >= 32) {
+            int title_w = inner_w - 1 - 6 - 1 - 6;
+            if (title_w < 4) title_w = 4;
+            snprintf(line, sizeof(line), "%c %-5s %-*.*s %s",
+                     tc->selected ? '*' : ' ',
+                     tc->id,
+                     title_w, title_w, tc->title,
+                     tc->script_path[0] ? "saved" : "new");
+        } else {
+            snprintf(line, sizeof(line), "%c %-5s %s",
+                     tc->selected ? '*' : ' ', tc->id, tc->title);
+        }
         if (i == app->selected_case) attron(A_REVERSE);
-        mvprintw(y + 1 + row, x + 1, "%c %-5s %-22.22s %-7s %s",
-                 tc->selected ? '*' : ' ',
-                 tc->id,
-                 tc->title,
-                 command_kind_name(tc->kind),
-                 tc->script_path[0] ? "saved" : "not_saved");
+        print_clip(y + 1 + row, x + 1, inner_w, line);
         if (i == app->selected_case) attroff(A_REVERSE);
         row++;
     }
     if (app->project.case_count == 0) {
-        mvprintw(y + 1, x + 1, "No test cases. Select Add test case.");
+        print_clip(y + 1, x + 1, inner_w, "No test cases. Select Add test case.");
     } else if (filtered == 0) {
-        mvprintw(y + 1, x + 1, "No matching tests. Clear or change filter.");
+        print_clip(y + 1, x + 1, inner_w, "No matching tests. Clear or change filter.");
     }
 }
 
 static void draw_case_details(const App *app, int y, int x, int h, int w) {
     draw_box(y, x, h, w, "Details");
     if (app->project.case_count == 0) return;
+    int inner_w = w - 2;
+    if (inner_w <= 0) return;
     if (app->case_filter[0] && filtered_case_count(app) == 0) {
-        int filter_w = w - 31;
-        if (filter_w < 1) filter_w = 1;
-        mvprintw(y + 1, x + 1, "No matching test for filter: %.*s", filter_w, app->case_filter);
+        print_clipf(y + 1, x + 1, inner_w, "No matching test for filter: %s", app->case_filter);
         return;
     }
     const TestCase *tc = &app->project.cases[app->selected_case];
     int check_count = command_check_count(test_command(tc));
     int line = y + 1;
-    mvprintw(line++, x + 1, "id: %s", tc->id);
-    mvprintw(line++, x + 1, "title: %.*s", w - 9, tc->title);
-    mvprintw(line++, x + 1, "kind: %s  selected: %s", command_kind_name(tc->kind), tc->selected ? "yes" : "no");
-    mvprintw(line++, x + 1, "expected_exit: %d", tc->expected_exit);
-    mvprintw(line++, x + 1, "checks: %d from @check lines", check_count);
-    mvprintw(line++, x + 1, "@check <var> <match> <expected>");
-    mvprintw(line++, x + 3, "exact: regex full match");
-    mvprintw(line++, x + 3, "not_exact: regex must not full match");
-    mvprintw(line++, x + 3, "contains: regex search");
-    mvprintw(line++, x + 3, "not_contains: regex must not match");
-    mvprintw(line++, x + 3, "empty: no text  not_empty: any text");
-    mvprintw(line++, x + 1, "cleanup: auto %s", tc->cleanup[0] ? "generated" : "none");
-    mvprintw(line++, x + 1, "reboot: auto %s", tc->kind == CMD_REBOOT ? "detected" : "none");
-    if (line < y + h - 1) mvprintw(line++, x + 1, "path: %.*s", w - 8, tc->script_path[0] ? tc->script_path : "<not saved>");
-    if (line < y + h - 1) mvprintw(line++, x + 1, "description:");
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "id: %s", tc->id);
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "title: %s", tc->title);
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "kind: %s  selected: %s", command_kind_name(tc->kind), tc->selected ? "yes" : "no");
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "expected_exit: %d", tc->expected_exit);
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "checks: %d from @check lines", check_count);
+    if (line < y + h - 1) print_clip(line++, x + 1, inner_w, "@check <var> <match> <expected>");
+    if (line < y + h - 1) print_clip(line++, x + 3, inner_w - 2, "exact: regex full match");
+    if (line < y + h - 1) print_clip(line++, x + 3, inner_w - 2, "not_exact: regex must not full match");
+    if (line < y + h - 1) print_clip(line++, x + 3, inner_w - 2, "contains: regex search");
+    if (line < y + h - 1) print_clip(line++, x + 3, inner_w - 2, "not_contains: regex must not match");
+    if (line < y + h - 1) print_clip(line++, x + 3, inner_w - 2, "empty: no text  not_empty: any text");
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "cleanup: auto %s", tc->cleanup[0] ? "generated" : "none");
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "reboot: auto %s", tc->kind == CMD_REBOOT ? "detected" : "none");
+    if (line < y + h - 1) print_clipf(line++, x + 1, inner_w, "path: %s", tc->script_path[0] ? tc->script_path : "<not saved>");
+    if (line < y + h - 1) print_clip(line++, x + 1, inner_w, "description:");
     int desc_rows = y + h - 1 - line;
-    if (desc_rows > 0) draw_wrapped_text(line, x + 1, w - 3, desc_rows, tc->description);
+    if (desc_rows > 0) draw_wrapped_text(line, x + 1, inner_w, desc_rows, tc->description);
 }
 
 static void draw_dashboard(const App *app, int height, int width) {
-    (void)height;
     draw_header(app, width);
     int top = 3;
+    if (width < 100) {
+        draw_box(top, 0, 6, width, "Tests");
+        attron(A_REVERSE);
+        print_clip(top + 1, 1, width - 2, "Create, select, and start tests");
+        attroff(A_REVERSE);
+        print_clip(top + 2, 1, width - 2, "Create test opens the built-in editor.");
+        print_clip(top + 3, 1, width - 2, "Selected tests are used for Start.");
+        draw_box(top + 7, 0, 6, width, "Summary");
+        print_clip(top + 8, 1, width - 2, "generated: current directory");
+        print_clipf(top + 9, 1, width - 2, "reboot tests: %s", has_reboot(&app->project) ? "yes" : "no");
+        print_clipf(top + 10, 1, width - 2, "cleanup script: %s", app->project.cleanup_count ? "yes" : "no");
+        print_clip(top + 11, 1, width - 2, "result: OK / NG, final exit 0 / 1");
+        static const char *menu[] = {"Open test list", "Create test", "Start selected tests", "Help"};
+        draw_menu(height - 4, 1, width - 2, menu, 4, app->selected_menu);
+        return;
+    }
     int left_w = width / 2 - 1;
     draw_box(top, 0, 11, left_w, "Tests");
     attron(A_REVERSE);
-    mvprintw(top + 1, 1, "%-*s", left_w - 2, "Create, select, and start tests");
+    print_clip(top + 1, 1, left_w - 2, "Create, select, and start tests");
     attroff(A_REVERSE);
-    mvprintw(top + 2, 1, "Create test opens the built-in editor.");
-    mvprintw(top + 3, 1, "Selected tests are used for Start.");
+    print_clip(top + 2, 1, left_w - 2, "Create test opens the built-in editor.");
+    print_clip(top + 3, 1, left_w - 2, "Selected tests are used for Start.");
     draw_box(top, left_w + 1, 11, width - left_w - 1, "Summary");
-    mvprintw(top + 1, left_w + 2, "generated: current directory");
-    mvprintw(top + 2, left_w + 2, "reboot tests: %s", has_reboot(&app->project) ? "yes" : "no");
-    mvprintw(top + 3, left_w + 2, "cleanup script: %s", app->project.cleanup_count ? "yes" : "no");
-    mvprintw(top + 4, left_w + 2, "result: OK / NG, final exit 0 / 1");
+    int right_w = width - left_w - 3;
+    print_clip(top + 1, left_w + 2, right_w, "generated: current directory");
+    print_clipf(top + 2, left_w + 2, right_w, "reboot tests: %s", has_reboot(&app->project) ? "yes" : "no");
+    print_clipf(top + 3, left_w + 2, right_w, "cleanup script: %s", app->project.cleanup_count ? "yes" : "no");
+    print_clip(top + 4, left_w + 2, right_w, "result: OK / NG, final exit 0 / 1");
     static const char *menu[] = {"Open test list", "Create test", "Start selected tests", "Help"};
     draw_menu(15, 1, width - 2, menu, 4, app->selected_menu);
 }
@@ -2928,6 +3019,24 @@ static void draw_dashboard(const App *app, int height, int width) {
 static void draw_editor(const App *app, int height, int width) {
     draw_header(app, width);
     int top = 3;
+    static const char *menu[] = {"Edit test", "Edit description", "Rename test", "Copy test", "Select test", "Delete test", "Print script", "Filter", "Start selected tests", "Back"};
+    if (width < 110) {
+        int content_bottom = height - 4;
+        int content_h = content_bottom - top;
+        int cases_h = content_h / 2;
+        int details_h = content_h - cases_h;
+        if (cases_h < 5) cases_h = 5;
+        if (details_h < 5) details_h = 5;
+        if (top + cases_h + details_h > content_bottom) details_h = content_bottom - top - cases_h;
+        if (details_h >= 4) {
+            draw_cases(app, top, 0, cases_h, width);
+            draw_case_details(app, top + cases_h, 0, details_h, width);
+        } else {
+            draw_cases(app, top, 0, content_h, width);
+        }
+        draw_menu(height - 4, 1, width - 2, menu, 10, app->selected_menu);
+        return;
+    }
     int bottom = height - 5;
     int left_w = width / 2;
     draw_cases(app, top, 0, bottom - top, left_w);
@@ -2936,18 +3045,17 @@ static void draw_editor(const App *app, int height, int width) {
     if (app->case_filter[0]) {
         int filter_w = width - 42;
         if (filter_w < 1) filter_w = 1;
-        mvprintw(bottom + 1, 1, "filter:%.*s  matches:%d/%d  selected:%d",
-                 filter_w, app->case_filter,
-                 filtered_case_count(app), app->project.case_count,
-                 selected_count(&app->project));
+        print_clipf(bottom + 1, 1, width - 2, "filter:%.*s  matches:%d/%d  selected:%d",
+                    filter_w, app->case_filter,
+                    filtered_case_count(app), app->project.case_count,
+                    selected_count(&app->project));
     } else {
-        mvprintw(bottom + 1, 1, "shell:bash  final NG exit:1  selected:%d  cleanup/reboot:auto",
-                 selected_count(&app->project));
+        print_clipf(bottom + 1, 1, width - 2, "shell:bash  final NG exit:1  selected:%d  cleanup/reboot:auto",
+                    selected_count(&app->project));
     }
     if (has_reboot(&app->project)) {
-        mvprintw(bottom + 2, 1, "selected reboot tests may interrupt sequential execution");
+        print_clip(bottom + 2, 1, width - 2, "selected reboot tests may interrupt sequential execution");
     }
-    static const char *menu[] = {"Edit test", "Edit description", "Rename test", "Copy test", "Select test", "Delete test", "Print script", "Filter", "Start selected tests", "Back"};
     draw_menu(height - 4, 1, width - 2, menu, 10, app->selected_menu);
 }
 
@@ -3106,16 +3214,14 @@ static void draw_completion_window(const App *app, int height, int width, int fi
         print_clip(y + 1 + i, x + 1, box_w - 2, app->completion_items[i]);
         if (i == app->completion_selected) attroff(A_REVERSE);
     }
-    mvaddch(y, x, ACS_ULCORNER);
-    mvhline(y, x + 1, ACS_HLINE, box_w - 2);
-    mvaddch(y, x + box_w - 1, ACS_URCORNER);
-    for (int row = 1; row < box_h - 1; row++) {
-        mvaddch(y + row, x, ACS_VLINE);
-        mvaddch(y + row, x + box_w - 1, ACS_VLINE);
-    }
-    mvaddch(y + box_h - 1, x, ACS_LLCORNER);
-    mvhline(y + box_h - 1, x + 1, ACS_HLINE, box_w - 2);
-    mvaddch(y + box_h - 1, x + box_w - 1, ACS_LRCORNER);
+    draw_corner_ui(y, x, UI_CORNER_UL);
+    draw_hline_ui(y, x + 1, box_w - 2);
+    draw_corner_ui(y, x + box_w - 1, UI_CORNER_UR);
+    draw_vline_ui(y + 1, x, box_h - 2);
+    draw_vline_ui(y + 1, x + box_w - 1, box_h - 2);
+    draw_corner_ui(y + box_h - 1, x, UI_CORNER_LL);
+    draw_hline_ui(y + box_h - 1, x + 1, box_w - 2);
+    draw_corner_ui(y + box_h - 1, x + box_w - 1, UI_CORNER_LR);
 }
 
 static bool editor_cursor_position(const App *app, int height, int width, int *out_y, int *out_x) {
@@ -6492,6 +6598,7 @@ int main(int argc, char **argv) {
     keypad(stdscr, TRUE);
     meta(stdscr, TRUE);
     set_escdelay(150);
+    clearok(stdscr, TRUE);
     curs_set(0);
     if (has_colors()) {
         start_color();
@@ -6502,6 +6609,16 @@ int main(int argc, char **argv) {
     while (running) {
         draw_app(&app);
         int ch = read_tui_input();
+        if (ch == KEY_RESIZE) {
+            endwin();
+            refresh();
+            clear();
+            clearok(stdscr, TRUE);
+            if (app.screen == SCREEN_SCRIPT_EDITOR) {
+                editor_ensure_cursor_visible(&app, editor_visible_rows(&app, LINES));
+            }
+            continue;
+        }
         if (app.screen != SCREEN_SCRIPT_EDITOR && ch == 27) {
             running = false;
             continue;

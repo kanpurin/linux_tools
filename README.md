@@ -1,4 +1,4 @@
-# linux_tui
+# linux_tools
 
 Linux 向け TUI ツール集です。
 

@@ -1,192 +1,281 @@
-# gd - lightweight GDB source TUI
+# gd - 軽量GDBソースTUI
 
-`gd` is a small C/ncurses front end for GDB/MI. It presents source when line
-debug information is available and automatically falls back to disassembly,
-registers, and address-only stack frames when it is not.
+`gd`は、GDB/MIをバックエンドとして使用するC/ncurses製の軽量デバッガーフロントエンドです。
+行デバッグ情報が利用できる場合はソースコードを表示し、利用できない場合は自動的に
+逆アセンブル、レジスタ、アドレスのみのスタックフレームを表示します。
 
-## Requirements
+## 必要環境
 
-- Linux, GCC (or another C11 compiler)
-- GDB 10.2 or newer
-- ncursesw development files
+- Linux
+- GCCまたは他のC11対応コンパイラー
+- GDB 10.2以降
+- ncursesw開発ファイル
 
-On RHEL 9: `dnf install gcc make gdb ncurses-devel`
+RHEL 9では、次のコマンドで必要なパッケージを導入できます。
 
-## Build and run
+```sh
+dnf install gcc make gdb ncurses-devel
+```
+
+## ビルドと実行
 
 ```sh
 make -C gd
 ./gd/gd ./program arg1 arg2
-# also accepted:
+
+# 次の形式も使用できます
 ./gd/gd --args ./program arg1 arg2
 ```
 
-Compile the target with `-g` for Source Mode and named Args/Locals. Programs
-built without `-g` remain debuggable in Assembly Mode; variable and argument
-names are not guessed.
+Source ModeでソースとArgs/Localsの変数名を表示するには、対象プログラムを`-g`付きで
+ビルドしてください。`-g`なしでビルドされたプログラムもAssembly Modeで解析できます。
+デバッグ情報がない場合、変数名や引数名を推測することはありません。
 
-## Install
+## インストール
 
-For a persistent system-wide command:
+システム共通のコマンドとして永続配置する場合は、次のコマンドを実行します。
 
 ```sh
 sudo make -C gd install
 gd ./program arg1 arg2
 ```
 
-The current VM keeps the project under `/opt/gd` and installs the executable as
-`/usr/local/bin/gd`. Temporary directories are not used for deployment.
+現在の開発用VMでは、ソースを`/opt/gd`、実行ファイルを`/usr/local/bin/gd`に配置します。
+デプロイ先に`/tmp`などの一時ディレクトリは使用しません。
 
-## Modes and keys
+## モードと基本操作
 
-`gd` starts in **GDB** control mode. `F2` switches between GDB and the read-only
-**VIM** navigation mode. In Source Mode, `Tab` moves through Source, Variables,
-and Stack. In Assembly Mode it moves through Disassembly, Registers, and Stack.
-`Shift-Tab` moves in reverse. The active input mode, `SRC`/`ASM` mode, and pane
-are always shown in the title. `d` switches Source and Disassembly manually.
+`gd`はデフォルトで**GDB操作モード**として起動します。`F2`でGDB操作モードと
+読み取り専用の**VIM操作モード**を切り替えます。
 
-VIM mode supports `h/j/k/l`, `w/b/e`, `0/^/$`, counts such as `5j`, `gg/G`,
-`H/M/L`, `{`/`}`, `PageUp/PageDown`, `Ctrl-u/Ctrl-d`, `Ctrl-f/Ctrl-b`,
-`zz/zt/zb`, matching-bracket `%`, `/` and `?` searches with `n/N`, word searches
-with `*`/`#`, and declaration jumps with `gd`/`gD`. `gd` searches backward for
-a local declaration; `gD` searches from the beginning of the current file.
+Source Modeでは、`Tab`でSource、Variables、Stackの順にペインを移動します。
+Assembly Modeでは、Disassembly、Registers、Stackの順に移動します。
+`Shift-Tab`は逆方向です。現在の入力モード、`SRC`/`ASM`、選択中のペインは
+画面上部に常時表示されます。`d`でSourceとDisassemblyを手動切り替えできます。
 
-In the Variables pane, `j/k` selects a variable, `Enter` expands or collapses
-one level using GDB variable objects, `p` evaluates the selected expression,
-`a` opens address or pointer details, and `w` creates a watchpoint. `B` creates
-a conditional breakpoint at the remembered Source cursor line; an input such
-as `== 5` is automatically combined with the selected variable.
+### VIM操作モード
 
-Variables are grouped as `Args` and `Locals` for GDB's currently selected stack
-frame. Arguments come only from `-stack-list-arguments` for that frame level;
-locals come only from `-stack-list-locals`. `-stack-list-variables` is not
-merged into either group, and duplicate MI records are removed within a group.
+VIM操作モードでは次の読み取り専用操作を使用できます。
 
-For a scalar or structure member, the `a` panel shows its expression, type,
-value, and storage address. For a pointer it shows the stored address and the
-GDB result of dereferencing it. The pointer address is compared with the
-addresses of current arguments, locals, and already-expanded member rows;
-matching expressions are listed without expanding any additional structures.
-NULL is shown without dereferencing, inaccessible memory is shown as
-`<unavailable>`, and `<optimized out>` values are not compared.
+- `h/j/k/l`、`w/b/e`、`0/^/$`
+- `5j`などの回数指定
+- `gg/G`、`H/M/L`、`{`/`}`
+- `PageUp/PageDown`、`Ctrl-u/Ctrl-d`、`Ctrl-f/Ctrl-b`
+- `zz/zt/zb`
+- `%`による対応括弧移動
+- `/`、`?`による検索と`n/N`による次・前候補移動
+- `*`、`#`によるカーソル上の単語検索
+- `gd`、`gD`による宣言位置への移動
 
-While stopped, `E` edits the selected argument, local, expanded structure
-member, pointer, or register. The dialog accepts a GDB expression as the new
-value, shows the old-to-new change, and requires explicit `y` confirmation.
-Assignments are evaluated by GDB with `-data-evaluate-expression`; the TUI does
-not parse C values. Variables, expanded children, and registers are refreshed
-immediately. Optimized-out values and assignments rejected by GDB remain
-unchanged. These edits affect only the debugged process, never the source file.
+`gd`は現在位置より前からローカル宣言を検索し、`gD`は現在ファイルの先頭から検索します。
 
-`R` opens Force Return for the currently selected frame. When debug type
-information is available, the return type is shown and `void` functions omit
-the value field. The action requires a second confirmation, executes GDB's
-`return`, then refreshes the active frame, Source/Disassembly, Variables,
-Registers, Stack, and execution position. For a symbol without return-type
-debug information, the type remains `<unknown>`. On x86-64 System V only, if
-GDB cannot apply `return VALUE` without that type, `gd` performs a valueless
-frame return and writes the explicitly supplied raw integer/pointer result to
-`rax`; floating-point and aggregate return conventions are not guessed.
+### GDB操作モード
 
-In the Stack pane, `j/k` selects any frame and `Enter` makes it GDB's active
-frame, refreshes Variables for that frame, and opens its source location.
-Stepping into a function in another source file switches Source automatically.
-`[P]` identifies project frames and `[X]` identifies external-library frames.
+- `r`: プログラムを実行
+- `n`: 次のソース行まで進む
+- `s`: 関数内へステップ実行
+- `c`: 実行を継続
+- `f`: 現在の関数が戻るまで実行
+- `b`: カーソル位置にBreakpointを設定・解除
+- `B`: 条件付きBreakpointを設定
+- `F`: 関数名からFunction Breakpointを設定
+- `C`: Catchpointメニューを開く
+- `w`: Watchpointを設定
+- `p`: 式を評価
+- `L`: 停止条件一覧を開く
+- `O`: プログラム出力を開く
+- `o`: ソースナビゲーションを開く
+- `e`: 現在の実行位置へ戻る
+- `h`: Helpを開く
+- `q`: 終了
 
-`o` opens a navigation chooser. Function search reuses the same incremental
-GDB symbol search as `F`, but opens the function instead of setting a
-breakpoint. Functions with line information open in Source; symbols without a
-source location open in Disassembly. File search recursively indexes C/C++
-source and header files below the inferred project root. Files not reported by
-GDB as line-debug sources are labeled `REFERENCE ONLY`; `b` and `B` are refused
-there because a source line cannot be mapped safely to an instruction.
+`r`はプログラムの実行前、または終了後のみ受け付けます。すでに実行中の場合は無視され、
+停止中のプログラムを再開する場合は`c`を使用します。
 
-Execution and browsing positions are independent. `=>` marks the execution
-line and `>` marks the browsing cursor. Source and Disassembly headings say
-`[EXEC]` or `[VIEW]`, and `e` returns to the current execution position without
-changing debugger state.
+## Variablesペイン
 
-Locations visited through Open, stepping, Stack selection, breakpoint-list
-jumps, and assembly call-target browsing are recorded in a 64-entry history.
-`[` or `Ctrl-o` moves back and `]` moves forward. Terminals encode `Ctrl-i` as
-the same byte as `Tab`, so `]` is the unambiguous forward-history key while
-`Tab` remains pane navigation. The history position and project/external
-classification are shown in the Source heading.
+Variablesペインでは次の操作を使用できます。
 
-In GDB mode, `r` runs, `n` steps over, `s` steps into, `c` continues, and `f`
-finishes the current function. `b` toggles a breakpoint at the cursor; `B`
-prompts for a GDB condition; `F` opens the function-symbol search; `C` opens
-the Catch Event menu; `w` creates a watchpoint. `p` evaluates an expression.
-`L`, `O`, and `h` open the stop-condition list, program output, and
-help; lowercase `o` opens source navigation. In the `L` list, `Enter` opens a breakpoint's source even when it belongs
-to another file. `q` quits in either mode.
+- `j/k`: 変数を選択
+- `Enter`: 構造体やポインタを1階層展開・折りたたみ
+- `p`: 選択中の式を評価
+- `a`: アドレスまたはポインタ情報を表示
+- `E`: 選択中の変数やメンバの値を変更
+- `w`: 選択中の式にWatchpointを設定
+- `B`: 選択中の式を使って条件付きBreakpointを設定
 
-`r` is accepted only before the program starts or after it exits. While the
-program is running it is ignored; while stopped, use `c` to continue.
+変数は、GDBで現在選択されているStack frameごとに`Args`と`Locals`へ分離して表示します。
+引数はそのフレームに対する`-stack-list-arguments`だけから取得し、ローカル変数は
+`-stack-list-locals`だけから取得します。`-stack-list-variables`を不用意にマージせず、
+同じMIレコードが複数回返った場合もグループ内で重複を除去します。
+
+### アドレス・ポインタ確認
+
+scalar変数または構造体メンバで`a`を押すと、式、型、値、格納先アドレスを表示します。
+ポインタでは、ポインタが保持するアドレスと、GDBによるdereference結果を表示します。
+
+ポインタ値は、現在の引数、ローカル変数、Variablesペインですでに展開されているメンバの
+アドレスと比較され、一致した式を表示します。照合のためだけに未展開の構造体を自動展開
+することはありません。
+
+- NULLポインタはdereferenceしません。
+- 読み取れないメモリーは`<unavailable>`と表示します。
+- `<optimized out>`の値はアドレス照合しません。
+- Cのポインタ演算はTUI側で再実装せず、GDBに評価させます。
+
+### 実行中プロセスの値変更
+
+停止中に`E`を押すと、選択中の引数、ローカル変数、展開済み構造体メンバ、ポインタ、
+またはレジスタを変更できます。新しい値はGDB式として入力し、変更前後の値を確認してから
+`y`で確定します。
+
+代入にはGDBの`-data-evaluate-expression`を使用し、TUI側でCの値を解析しません。
+変更後はVariables、展開中の子要素、Registersを即座に更新します。GDBが拒否した代入や
+optimized outされた値は変更しません。この操作で変更されるのはデバッグ対象プロセスだけで、
+ソースファイルは変更されません。
+
+## 強制return
+
+`R`を押すと、現在選択中のフレームに対するForce Return画面を開きます。
+型情報が利用できる場合は戻り値型を表示し、`void`関数では値入力欄を省略します。
+再確認後にGDBの`return`を実行し、現在フレーム、Source/Disassembly、Variables、
+Registers、Stack、実行位置を更新します。
+
+戻り値型のデバッグ情報がない場合は`<unknown>`と表示します。x86-64 System V環境に限り、
+型情報不足によりGDBが`return VALUE`を適用できない場合は、値なしでフレームをreturnした後、
+明示的に入力された整数またはポインタ値を`rax`へ設定します。浮動小数点や構造体の
+戻り値規約は推測しません。
+
+## Stackペインと複数ファイル
+
+Stackペインでは`j/k`で任意のフレームを選択し、`Enter`でそのフレームをGDB側でも
+選択します。選択後は、そのフレーム固有のVariablesを更新してソース位置を開きます。
+
+別ファイルの関数へstepした場合は、Sourceを自動的に切り替えます。`[P]`はプロジェクト内、
+`[X]`は外部ライブラリ、`[A]`はソース情報のないアドレスのみのフレームを表します。
+
+`o`はソースナビゲーションを開きます。Function検索は`F`と同じGDBシンボル検索を使用しますが、
+Breakpointを設定せず関数を表示します。行情報がある関数はSource、ソース位置がない関数は
+Disassemblyで開きます。
+
+File検索は、推定したプロジェクトルート以下のC/C++ソースとヘッダーを再帰的に検索します。
+GDBが行デバッグ情報を報告していないファイルは`REFERENCE ONLY`と表示します。そのような
+ファイルでは、ソース行を命令へ安全に対応付けられないため`b`と`B`を拒否します。
+
+実行位置と閲覧位置は独立しています。`=>`は実行位置、`>`は閲覧カーソルです。
+SourceとDisassemblyの見出しには`[EXEC]`または`[VIEW]`を表示します。`e`を押すと、
+デバッガーの状態を変更せず現在の実行位置へ戻ります。
+
+Open、step、Stack選択、Breakpoint一覧からのジャンプ、assemblyのcall先閲覧で移動した位置は、
+最大64件の履歴に保存されます。`[`または`Ctrl-o`で戻り、`]`で進みます。端末では
+`Ctrl-i`と`Tab`が同じバイトとして扱われるため、進む操作には`]`を使用し、`Tab`は
+ペイン移動のまま維持しています。
 
 ## Assembly Mode
 
-When the selected frame has no usable `fullname` and source line, `gd`
-automatically enters Assembly Mode. The Disassembly pane shows the selected
-frame's function or an address range around its PC, marks the current
-instruction with `=>`, highlights `call` instructions and their symbol targets,
-and follows the PC after every stop. `j/k` browses instructions and `b` toggles
-a breakpoint at the selected instruction address. `i` uses `-exec-step-instruction`; `I` uses
-`-exec-next-instruction`.
+選択中のフレームに利用可能な`fullname`と行番号がない場合、`gd`は自動的にAssembly Modeへ
+切り替わります。GDBがソース位置を返しても、実際のソースファイルを読み込めない場合は、
+古いSourceを残さずAssembly Modeへフォールバックします。
 
-Every stop re-evaluates the currently selected frame: `fullname` plus a positive
-line selects Source Mode, otherwise Assembly Mode. GDB `step-mode` is enabled so
-`s` stops at the entry of a function without line information instead of
-silently stepping over it; returning to a frame with line information switches
-back to Source automatically.
+Disassemblyペインには、選択中フレームの関数またはPC周辺の命令を表示します。
+現在の命令は`=>`で示し、`call`命令とそのシンボルを強調表示します。
 
-`F` opens the Function Breakpoint dialog. Function names are queried from GDB
-with `-symbol-info-functions --include-nondebug`; typing filters the candidates
-incrementally, `j/k` or the arrow keys select one, and `Enter` sets the
-breakpoint. Candidates show their module and address when GDB supplies them.
-Executable, debug-symbol, and currently loaded shared-library functions are
-included; no ELF parser or source-level name guessing is used. Typing a full
-name and pressing `Enter` also attempts the GDB breakpoint directly.
+- `j/k`: 命令を選択
+- `b`: 選択中の命令アドレスにBreakpointを設定・解除
+- `i`: `-exec-step-instruction`で1命令進める
+- `I`: `-exec-next-instruction`でcallを飛び越す
+- `Enter`: 直接callの呼び出し先を実行せずに開く
 
-Function entries are labeled `function` in the `L` stop-condition list and can
-be deleted or enabled/disabled with the existing `d`/`e` keys. `Enter` opens
-their source when line information exists, or their function disassembly when
-only an address is available. Pending breakpoints are labeled `[pending]`.
+停止イベントを受けるたび、現在フレームに`fullname`と正の行番号があるかを確認します。
+存在すればSource Mode、存在しなければAssembly Modeへ切り替えます。GDBの`step-mode`を
+有効にしているため、`s`で行情報のない関数へ入った場合も関数入口で停止できます。
+行情報のあるフレームへ戻るとSource Modeへ自動復帰します。
 
-`C` opens the Catch Event menu for syscall, signal, fork, vfork, exec, and
-shared-library-load events. Syscall and signal names are completed by GDB
-itself, so `gd` does not maintain an architecture-specific syscall-number
-table. Catchpoints appear in the `L` list as `C#n` and use the same `d` delete
-and `e` enable/disable keys. Syscall entry and return are distinguished. On
-x86-64, Registers labels `orig_rax` as the syscall number on entry and `rax`
-as the return value on return, and labels `rdi`, `rsi`, `rdx`, `r10`, `r8`,
-and `r9` as syscall arguments 1-6. An exec
-catch discards stale source browsing state before opening the new frame.
+## Function Breakpoint
 
-Registers are refreshed from `-data-list-register-names` and
-`-data-list-register-values` after each stop and frame selection. On x86-64
-Linux, `rdi`, `rsi`, `rdx`, `rcx`, `r8`, and `r9` are labeled as System V ABI
-`arg1` through `arg6`; no source-level argument names are invented. Changed
-values are shown as old-to-new transitions. In the Registers pane, `j/k`
-selects a register and `p` shows its raw, decimal, and hexadecimal values.
+`F`でFunction Breakpoint画面を開きます。候補はGDBの
+`-symbol-info-functions --include-nondebug`から取得し、入力するたびに絞り込みます。
+`j/k`または上下キーで候補を選択し、`Enter`でBreakpointを設定します。
 
-Address-only Stack frames remain selectable. Selecting one refreshes its PC,
-Disassembly, and recoverable register values. Frames without source use `[A]`
-and display their address. On a direct assembly `call`, `Enter` opens the call
-target without executing it and adds that view to navigation history. Register
-memory inspection with `a` remains future work.
+GDBが情報を提供できる場合は、関数名に加えてモジュール名とアドレスを表示します。
+実行ファイル、デバッグシンボル、ロード済み共有ライブラリの関数を対象とし、独自の
+ELF解析やソースレベルの名前推測は行いません。完全な関数名を入力して`Enter`を押した場合も、
+GDBへ直接Breakpoint設定を試みます。
 
-The UI and GDB controller are separated in `src/main.c` and `src/gdb.c`.
+Function Breakpointは停止条件一覧に`function`として表示され、`d`で削除、`e`で有効・無効を
+切り替えられます。`Enter`を押すと、行情報がある場合はソースへ、アドレスのみの場合は
+関数先頭のDisassemblyへ移動します。未ロード共有ライブラリなどのpending Breakpointは
+`[pending]`と表示します。
 
-## Stop-condition display
+## Catchpoint
 
-The always-visible `STOPS` line summarizes breakpoints (with a conditional
-count), catchpoints, and watchpoints. Their IDs use the same notation
-everywhere: `B#n`, `C#n`, and `W#n`. Source gutter markers and watched-variable tags use
-those IDs, so an item can be matched with the detailed `L` list immediately.
+`C`でCatch Eventメニューを開き、次のイベントにCatchpointを設定できます。
 
-Colors carry the same meaning throughout the UI: cyan for breakpoints, yellow
-for catchpoints, conditional breakpoints, and search matches, green for watchpoints
-and the current execution marker, red for errors, and dim text for disabled
-items. When a watchpoint stops the program, its last old-to-new value is shown
-in the summary and in the `L` list.
+- Syscall
+- Signal
+- Fork
+- Vfork
+- Exec
+- Shared library load
+
+syscall名とsignal名の候補は、GDBの`complete catch syscall`および
+`complete catch signal`から取得します。アーキテクチャ固有のsyscall番号表を`gd`側で
+管理することはありません。
+
+Catchpointは停止条件一覧に`C#n`として表示され、他の停止条件と同様に`d`で削除、
+`e`で有効・無効を切り替えられます。停止時にはイベント種別、対象、Entry/Return、
+スレッド情報を保持し、Source/Disassembly、Registers、Stackを更新します。
+
+syscallはEntryとReturnを区別します。x86-64では、Entry時に`orig_rax`をsyscall番号として、
+Return時に`rax`を戻り値として表示します。`rdi`、`rsi`、`rdx`、`r10`、`r8`、`r9`は
+syscall引数1〜6として表示します。
+
+Exec Catchpointで停止した場合は、古いソース閲覧状態を破棄してから新しいフレームの
+SourceまたはDisassemblyを開きます。
+
+## Registersペイン
+
+停止後またはフレーム選択後に、`-data-list-register-names`と
+`-data-list-register-values`でRegistersを更新します。
+
+x86-64 Linuxでは、通常の関数呼び出し時に`rdi`、`rsi`、`rdx`、`rcx`、`r8`、`r9`を
+System V ABIの`arg1`〜`arg6`として表示します。ソースレベルの引数名は推測しません。
+変化したレジスタは変更前から変更後への形式で表示します。
+
+Registersペインでは`j/k`でレジスタを選択し、`p`でraw値、10進数、16進数を確認できます。
+`E`で選択中のレジスタ値を変更できます。
+
+ソースのないStack frameも選択可能で、選択するとPC、Disassembly、取得可能なRegistersを
+更新します。レジスタが指すメモリーを`a`で調べる機能は今後の拡張対象です。
+
+## 停止条件表示
+
+常時表示される`STOPS`行には、Breakpoint、Catchpoint、Watchpointの件数を表示します。
+条件付きBreakpointの件数もBreakpoint内に表示します。ID表記は画面全体で統一しています。
+
+- `B#n`: 通常または条件付きBreakpoint
+- `C#n`: Catchpoint
+- `W#n`: Watchpoint
+
+SourceのガターやVariables上のWatchpointタグにも同じIDを使用するため、`L`の詳細一覧と
+すぐに対応付けられます。
+
+色の意味も画面全体で統一しています。
+
+- シアン: Breakpoint
+- 黄色: Catchpoint、条件付きBreakpoint、検索一致
+- 緑: Watchpoint、現在の実行位置
+- 赤: エラー
+- 暗色: 無効化中の項目
+
+Watchpointで停止した場合は、直前の値から新しい値への変化を`STOPS`行と詳細一覧に表示します。
+
+## 実装構成
+
+- `src/main.c`: ncurses UI、入力処理、画面遷移
+- `src/gdb.c`: GDB/MI制御、レスポンス解析、状態更新
+- `src/gdb.h`: GDBコントローラーの公開データ構造とAPI
+- `tests/`: fixtureとGDB/MI回帰テスト
+
+TUI側でデバッガー機能を再実装せず、式評価、ポインタ操作、シンボル検索、Breakpoint、
+Watchpoint、Catchpoint、実行制御は可能な限りGDBへ任せています。

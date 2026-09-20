@@ -6,6 +6,7 @@ Linux 向け TUI ツール集です。
 
 - `procview/` - C/ncurses 製プロセスビューアー
 - `testforge/` - C/ncurses 製 TestForge、負荷注入・試験シナリオ支援ツール
+- `gd/` - GDB/MIをバックエンドにした軽量ソースデバッグTUI
 
 ## Build
 
@@ -18,6 +19,7 @@ make
 ```bash
 make -C procview
 make -C testforge
+make -C gd
 ```
 
 ## Run
@@ -25,6 +27,14 @@ make -C testforge
 ```bash
 ./procview/procview
 ./testforge/testforge
+./gd/gd ./program arg1 arg2
+```
+
+To install `gd` as a persistent system command:
+
+```bash
+sudo make -C gd install
+gd ./program arg1 arg2
 ```
 
 ## AutoTest Script Builder

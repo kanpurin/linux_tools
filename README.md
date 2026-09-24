@@ -7,6 +7,7 @@ Linux 向け TUI ツール集です。
 - `procview/` - C/ncurses 製プロセスビューアー
 - `testforge/` - C/ncurses 製 TestForge、負荷注入・試験シナリオ支援ツール
 - `gd/` - GDB/MIをバックエンドにした軽量ソースデバッグTUI
+- `ltree/` - ディレクトリ構成を木形式で表示する軽量 `ltree` コマンド
 
 ## Build
 
@@ -20,6 +21,7 @@ make
 make -C procview
 make -C testforge
 make -C gd
+make -C ltree
 ```
 
 ## Run
@@ -28,6 +30,7 @@ make -C gd
 ./procview/procview
 ./testforge/testforge
 ./gd/gd ./program arg1 arg2
+./ltree/ltree [directory]
 ```
 
 To install `gd` as a persistent system command:
@@ -35,6 +38,9 @@ To install `gd` as a persistent system command:
 ```bash
 sudo make -C gd install
 gd ./program arg1 arg2
+
+sudo make -C ltree install
+ltree .
 ```
 
 ## AutoTest Script Builder

@@ -5,3 +5,14 @@ testforge/testforge
 testforge/testforge-exports/
 testforge/testforge-scenarios/
 ltree/ltree
+strace-src/strace-src
+strace-src/*.o
+strace-src/tests/parser_test
+strace-src/tests/resolve_test
+strace-src/tests/filter_test
+strace-src/tests/trace_file_test
+strace-src/tests/fd_tracker_test
+strace-src/tests/fixture
+strace-src/tests/process_fixture
+strace-src/tests/fd_fixture
+strace-src/*.trace

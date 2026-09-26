@@ -6,6 +6,7 @@
 #include <curses.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <langinfo.h>
 #include <locale.h>
 #include <limits.h>
 #include <signal.h>
@@ -13,10 +14,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <wchar.h>
 
 typedef struct {
     char **lines;
@@ -25,6 +28,7 @@ typedef struct {
 } SourceFile;
 
 typedef enum { INPUT_NONE, INPUT_SEARCH } InputMode;
+typedef enum { LANGUAGE_AUTO, LANGUAGE_JA, LANGUAGE_EN } Language;
 typedef enum {
     POPUP_NONE,
     POPUP_STACK,
@@ -142,9 +146,42 @@ typedef struct {
     const char *trace_path;
     const char *save_path;
     char **command;
+    Language language;
+    bool help;
 } Cli;
 
+static bool tui_japanese;
+
 static int spawned_id(const TraceEvent *event, bool *is_thread);
+
+static bool parse_language(const char *value, Language *language) {
+    if (strcasecmp(value, "auto") == 0) *language = LANGUAGE_AUTO;
+    else if (strcasecmp(value, "ja") == 0 || strcasecmp(value, "japanese") == 0)
+        *language = LANGUAGE_JA;
+    else if (strcasecmp(value, "en") == 0 || strcasecmp(value, "english") == 0)
+        *language = LANGUAGE_EN;
+    else return false;
+    return true;
+}
+
+static bool locale_is_utf8(void) {
+    const char *codeset = nl_langinfo(CODESET);
+    return codeset && (strcasecmp(codeset, "UTF-8") == 0 ||
+                       strcasecmp(codeset, "UTF8") == 0);
+}
+
+static bool language_is_japanese(Language language) {
+    const char *locale;
+    if (!locale_is_utf8()) return false;
+    if (language == LANGUAGE_JA) return true;
+    if (language == LANGUAGE_EN) return false;
+    locale = setlocale(LC_MESSAGES, NULL);
+    return locale && strncasecmp(locale, "ja", 2) == 0;
+}
+
+static const char *ui_text(const char *english, const char *japanese) {
+    return tui_japanese ? japanese : english;
+}
 
 static void clear_source_override(App *app) {
     free(app->source_override_path);
@@ -172,12 +209,21 @@ static FdAnalysis *ensure_fd_analysis(App *app) {
 }
 
 static void usage(FILE *stream) {
-    fprintf(stream,
-            "Usage:\n"
-            "  strace-src [-o FILE.trace] COMMAND [ARG...]\n"
-            "  strace-src [-o FILE.trace] -p PID\n"
-            "  strace-src FILE.trace\n\n"
-            "Keys: Tab, Up/k, Down/j, PgUp, PgDn, g, G, /, e, p, P, r, o, i, s, ?, Esc, q\n");
+    if (tui_japanese) {
+        fprintf(stream,
+                "使用法:\n"
+                "  strace-src [--lang auto|ja|en] [-o FILE.trace] COMMAND [ARG...]\n"
+                "  strace-src [--lang auto|ja|en] [-o FILE.trace] -p PID\n"
+                "  strace-src [--lang auto|ja|en] FILE.trace\n\n"
+                "キー: Tab, Up/k, Down/j, PgUp, PgDn, g, G, /, e, p, P, r, o, i, s, L, ?, Esc, q\n");
+    } else {
+        fprintf(stream,
+                "Usage:\n"
+                "  strace-src [--lang auto|ja|en] [-o FILE.trace] COMMAND [ARG...]\n"
+                "  strace-src [--lang auto|ja|en] [-o FILE.trace] -p PID\n"
+                "  strace-src [--lang auto|ja|en] FILE.trace\n\n"
+                "Keys: Tab, Up/k, Down/j, PgUp, PgDn, g, G, /, e, p, P, r, o, i, s, L, ?, Esc, q\n");
+    }
 }
 
 static bool has_trace_suffix(const char *path) {
@@ -188,8 +234,15 @@ static bool has_trace_suffix(const char *path) {
 static int parse_cli(int argc, char **argv, Cli *cli) {
     int i = 1;
     memset(cli, 0, sizeof(*cli));
+    cli->language = LANGUAGE_AUTO;
     while (i < argc) {
-        if (strcmp(argv[i], "-o") == 0) {
+        if (strcmp(argv[i], "--lang") == 0) {
+            if (++i >= argc || !parse_language(argv[i], &cli->language)) return -1;
+            ++i;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            cli->help = true;
+            ++i;
+        } else if (strcmp(argv[i], "-o") == 0) {
             if (cli->save_path || ++i >= argc) return -1;
             cli->save_path = argv[i++];
         } else if (strcmp(argv[i], "-p") == 0) {
@@ -209,6 +262,7 @@ static int parse_cli(int argc, char **argv, Cli *cli) {
             i = argc;
         }
     }
+    if (cli->help) return cli->command || cli->attach ? -1 : 0;
     if (cli->attach) return 0;
     if (!cli->command) return -1;
     if (!cli->save_path && !cli->command[1] && has_trace_suffix(cli->command[0])) {
@@ -269,14 +323,14 @@ static int start_strace(App *app, char **command, const char *attach_pid) {
     stdout_fd = create_capture_file(app->stdout_path, sizeof(app->stdout_path), "stdout");
     stderr_fd = create_capture_file(app->stderr_path, sizeof(app->stderr_path), "stderr");
     if (stdout_fd < 0 || stderr_fd < 0 || pipe(pipefd) < 0) {
-        perror("strace-src: setup");
+        perror(ui_text("strace-src: setup", "strace-src: 初期化"));
         if (stdout_fd >= 0) close(stdout_fd);
         if (stderr_fd >= 0) close(stderr_fd);
         return -1;
     }
     pid = fork();
     if (pid < 0) {
-        perror("strace-src: fork");
+        perror(ui_text("strace-src: fork", "strace-src: fork失敗"));
         close(stdout_fd);
         close(stderr_fd);
         close(pipefd[0]);
@@ -321,7 +375,9 @@ static int start_strace(App *app, char **command, const char *attach_pid) {
         }
         args[i] = NULL;
         execvp(args[0], args);
-        dprintf(STDERR_FILENO, "strace-src: cannot run strace: %s\n", strerror(errno));
+        dprintf(STDERR_FILENO, ui_text("strace-src: cannot run strace: %s\n",
+                                      "strace-src: straceを起動できません: %s\n"),
+                strerror(errno));
         _exit(127);
     }
     setpgid(pid, pid);
@@ -542,8 +598,48 @@ static const char *base_name(const char *path) {
     return slash ? slash + 1 : path;
 }
 
+static int display_width(const char *text) {
+    mbstate_t state;
+    const char *scan = text;
+    wchar_t character;
+    int width = 0;
+    size_t bytes;
+    memset(&state, 0, sizeof(state));
+    while (*scan) {
+        int cells;
+        bytes = mbrtowc(&character, scan, MB_CUR_MAX, &state);
+        if (bytes == (size_t)-1 || bytes == (size_t)-2) return (int)strlen(text);
+        if (bytes == 0) break;
+        cells = wcwidth(character);
+        width += cells < 0 ? 1 : cells;
+        scan += bytes;
+    }
+    return width;
+}
+
 static void add_clipped(WINDOW *window, int y, int x, const char *text, int width) {
-    if (width > 0) mvwaddnstr(window, y, x, text, width);
+    mbstate_t state;
+    const char *scan = text;
+    int cells = 0;
+    if (width <= 0) return;
+    wmove(window, y, x);
+    memset(&state, 0, sizeof(state));
+    while (*scan) {
+        wchar_t character;
+        size_t bytes = mbrtowc(&character, scan, MB_CUR_MAX, &state);
+        int character_width;
+        if (bytes == (size_t)-1 || bytes == (size_t)-2) {
+            waddnstr(window, scan, width - cells);
+            return;
+        }
+        if (bytes == 0) break;
+        character_width = wcwidth(character);
+        if (character_width < 0) character_width = 1;
+        if (cells + character_width > width) break;
+        waddnwstr(window, &character, 1);
+        cells += character_width;
+        scan += bytes;
+    }
 }
 
 static void append_title(char *title, size_t size, const char *value) {
@@ -554,10 +650,10 @@ static void append_title(char *title, size_t size, const char *value) {
 static void trace_title(App *app, char *title, size_t size) {
     char source[512];
     if (app->input_mode != INPUT_NONE) {
-        snprintf(title, size, " Search: %s_ ", app->input);
+        snprintf(title, size, ui_text(" Search: %s_ ", " 検索: %s_ "), app->input);
         return;
     }
-    snprintf(title, size, " Trace Log");
+    snprintf(title, size, "%s", ui_text(" Trace Log", " トレースログ"));
     if (app->syscall_filter_active) {
         if (app->syscall_selected_count == 1) {
             char single[256];
@@ -565,7 +661,8 @@ static void trace_title(App *app, char *title, size_t size) {
             append_title(title, size, single);
         } else {
             char count[64];
-            snprintf(count, sizeof(count), "syscall:%zu", app->syscall_selected_count);
+            snprintf(count, sizeof(count), ui_text("syscall:%zu", "システムコール:%zu"),
+                     app->syscall_selected_count);
             append_title(title, size, count);
         }
     }
@@ -579,7 +676,8 @@ static void trace_title(App *app, char *title, size_t size) {
             else
                 snprintf(process, sizeof(process), "TID %d", choice->tid);
         } else {
-            snprintf(process, sizeof(process), "process:%zu", app->process_filter_count);
+            snprintf(process, sizeof(process), ui_text("process:%zu", "プロセス:%zu"),
+                     app->process_filter_count);
         }
         append_title(title, size, process);
     }
@@ -684,9 +782,9 @@ static void draw_trace(App *app, int height, int width) {
 }
 
 static void draw_source_unavailable(int top, int height, int width) {
-    const char *message = "Source unavailable";
+    const char *message = ui_text("Source unavailable", "ソースを表示できません");
     int y = top + height / 2;
-    int x = (width - (int)strlen(message)) / 2;
+    int x = (width - display_width(message)) / 2;
     if (x < 1) x = 1;
     add_clipped(stdscr, y, x, message, width - x - 1);
 }
@@ -726,7 +824,7 @@ static void draw_source(App *app, int top, int height, int width) {
     mvvline(top + 1, 0, ACS_VLINE, height - 2);
     mvvline(top + 1, width - 1, ACS_VLINE, height - 2);
     if (app->focused_pane == 1) wattron(stdscr, A_BOLD);
-    add_clipped(stdscr, top, 2, " Source ", width - 4);
+    add_clipped(stdscr, top, 2, ui_text(" Source ", " ソース "), width - 4);
     if (app->focused_pane == 1) wattroff(stdscr, A_BOLD);
     if (app->selected < 0 || app->selected >= (int)app->model.count) {
         draw_source_unavailable(top, height, width);
@@ -783,7 +881,9 @@ static void draw(App *app) {
     getmaxyx(stdscr, rows, cols);
     erase();
     if (rows < 10 || cols < 30) {
-        add_clipped(stdscr, 0, 0, "Terminal too small (minimum 30x10)", cols);
+        add_clipped(stdscr, 0, 0,
+                    ui_text("Terminal too small (minimum 30x10)",
+                            "端末が小さすぎます（最小30x10）"), cols);
         wnoutrefresh(stdscr);
         return;
     }
@@ -1142,6 +1242,7 @@ static WINDOW *create_popup(const char *title, int wanted_height, int wanted_wid
     int width;
     int x;
     int y;
+    int title_width;
     WINDOW *window;
     getmaxyx(stdscr, rows, cols);
     height = wanted_height < rows - 2 ? wanted_height : rows - 2;
@@ -1154,9 +1255,15 @@ static WINDOW *create_popup(const char *title, int wanted_height, int wanted_wid
     if (!window) return NULL;
     keypad(window, TRUE);
     box(window, 0, 0);
-    if (width > (int)strlen(title) + 4)
-        mvwprintw(window, 0, (width - (int)strlen(title) - 2) / 2, " %s ", title);
+    title_width = display_width(title);
+    if (width > title_width + 4)
+        mvwprintw(window, 0, (width - title_width - 2) / 2, " %s ", title);
     return window;
+}
+
+static bool stack_frame_source_available(StackFrame *frame) {
+    return stack_frame_resolve(frame) && frame->source_path &&
+           access(frame->source_path, R_OK) == 0;
 }
 
 static void draw_stack_popup(App *app) {
@@ -1178,7 +1285,7 @@ static void draw_stack_popup(App *app) {
     if (height > rows - 4) height = rows - 4;
     width = cols - 8;
     if (width > 100) width = 100;
-    window = create_popup("Stack", height, width);
+    window = create_popup(ui_text("Stack", "スタック"), height, width);
     if (!window) return;
     getmaxyx(window, height, width);
     content = height - 3;
@@ -1197,8 +1304,13 @@ static void draw_stack_popup(App *app) {
         const char *module = frame->module[0] == '.' ? frame->module : base_name(frame->module);
         char line[2048];
         bool resolved = stack_frame_resolve(frame);
-        snprintf(line, sizeof(line), "%c #%d %-20s %s%s%s",
-                 index == app->stack_cursor ? '>' : ' ', index, module,
+        bool available = resolved && frame->source_path &&
+                         access(frame->source_path, R_OK) == 0;
+        const char *status = available ? ui_text("[source]", "[ソースあり]") :
+                             resolved ? ui_text("[file unavailable]", "[ファイルなし]") :
+                                        ui_text("[no source]", "[ソースなし]");
+        snprintf(line, sizeof(line), "%c %s #%d %-20s %s%s%s",
+                 index == app->stack_cursor ? '>' : ' ', status, index, module,
                  frame->function, frame->offset[0] ? "+" : "", frame->offset);
         if (resolved) {
             size_t used = strlen(line);
@@ -1206,15 +1318,23 @@ static void draw_stack_popup(App *app) {
                 snprintf(line + used, sizeof(line) - used, "  %s:%d",
                          base_name(frame->source_path), frame->source_line);
         }
-        if (resolved) wattron(window, A_BOLD | (has_colors() ? COLOR_PAIR(COLOR_RESOLVED) : 0));
+        if (available)
+            wattron(window, A_BOLD | (has_colors() ? COLOR_PAIR(COLOR_RESOLVED) : 0));
+        else
+            wattron(window, A_DIM);
         if (index == app->stack_cursor) wattron(window, A_REVERSE);
-        mvwaddnstr(window, i + 1, 1, line, width - 2);
+        add_clipped(window, i + 1, 1, line, width - 2);
         if (index == app->stack_cursor) wattroff(window, A_REVERSE);
-        if (resolved) wattroff(window, A_BOLD | (has_colors() ? COLOR_PAIR(COLOR_RESOLVED) : 0));
+        if (available)
+            wattroff(window, A_BOLD | (has_colors() ? COLOR_PAIR(COLOR_RESOLVED) : 0));
+        else
+            wattroff(window, A_DIM);
     }
     (void)adopted;
-    mvwaddnstr(window, height - 2, 2,
-               "Up/Down Select   Enter Use Source   Esc Close", width - 4);
+    add_clipped(window, height - 2, 2,
+                ui_text("Bright [source] frames selectable  Enter Use Source  Esc Close",
+                        "[ソースあり]のみ選択可  Enter 表示  Esc 閉じる"),
+                width - 4);
     wnoutrefresh(window);
     delwin(window);
 }
@@ -1229,6 +1349,7 @@ static void draw_fd_info_popup(App *app) {
     int width;
     int row = 1;
     int creator;
+    char process_line[512];
     if (app->selected < 0 || !ensure_fd_analysis(app)) return;
     info = fd_analysis_event(app->fd_analysis, (size_t)app->selected);
     if (!info || info->primary_ref < 0 || (size_t)info->primary_ref >= info->ref_count)
@@ -1236,46 +1357,56 @@ static void draw_fd_info_popup(App *app) {
     ref = &info->refs[info->primary_ref];
     object = fd_analysis_object(app->fd_analysis, ref->object_id);
     event = &app->model.events[app->selected];
-    window = create_popup("FD Info", 18, 88);
+    window = create_popup(ui_text("FD Info", "FD情報"), 18, 88);
     if (!window) return;
     getmaxyx(window, height, width);
-    if (event->pid == event->tid)
-        mvwprintw(window, row++, 2, "Process   %s[%d]", event->comm && event->comm[0] ? event->comm : "process", event->pid);
-    else
-        mvwprintw(window, row++, 2, "Process   %s[%d]  TID %d", event->comm && event->comm[0] ? event->comm : "thread", event->pid, event->tid);
+    if (event->pid == event->tid) {
+        snprintf(process_line, sizeof(process_line),
+                 ui_text("Process   %s[%d]", "プロセス  %s[%d]"),
+                 event->comm && event->comm[0] ? event->comm : ui_text("process", "プロセス"),
+                 event->pid);
+    } else {
+        snprintf(process_line, sizeof(process_line),
+                 ui_text("Process   %s[%d]  TID %d", "プロセス  %s[%d]  TID %d"),
+                 event->comm && event->comm[0] ? event->comm : ui_text("thread", "スレッド"),
+                 event->pid, event->tid);
+    }
+    add_clipped(window, row++, 2, process_line, width - 4);
     mvwprintw(window, row++, 2, "FD        %d", ref->fd);
     if (object && object->target && object->target[0]) {
         ++row;
-        mvwaddnstr(window, row++, 2, "Target", width - 4);
-        mvwaddnstr(window, row++, 4, object->target, width - 6);
+        add_clipped(window, row++, 2, ui_text("Target", "対象"), width - 4);
+        add_clipped(window, row++, 4, object->target, width - 6);
     }
     if (object && object->origin_event >= 0 && row + 2 < height - 2) {
         TraceEvent *origin = &app->model.events[object->origin_event];
         char line[4096];
         ++row;
-        mvwaddnstr(window, row++, 2, "Origin", width - 4);
+        add_clipped(window, row++, 2, ui_text("Origin", "生成元"), width - 4);
         snprintf(line, sizeof(line), "#%d %s", object->origin_event + 1, origin->text);
-        mvwaddnstr(window, row++, 4, line, width - 6);
+        add_clipped(window, row++, 4, line, width - 6);
     }
     creator = info->creator_event;
     if (object && creator >= 0 && creator != object->origin_event && row + 2 < height - 2) {
         ++row;
-        mvwaddnstr(window, row++, 2, "History", width - 4);
+        add_clipped(window, row++, 2, ui_text("History", "履歴"), width - 4);
         while (creator >= 0 && creator != object->origin_event && row < height - 3) {
             const FdEventInfo *creator_info = fd_analysis_event(app->fd_analysis, (size_t)creator);
             char line[4096];
             snprintf(line, sizeof(line), "#%d %s", creator + 1,
                      app->model.events[creator].text);
-            mvwaddnstr(window, row++, 4, line, width - 6);
+            add_clipped(window, row++, 4, line, width - 6);
             if (!creator_info || creator_info->jump_event == creator) break;
             creator = creator_info->jump_event;
         }
     }
     if (row + 2 < height) {
         ++row;
-        mvwaddnstr(window, row++, 2, "State", width - 4);
+        add_clipped(window, row++, 2, ui_text("State", "状態"), width - 4);
         wattron(window, A_BOLD);
-        mvwaddnstr(window, row, 4, info->open_after ? "OPEN" : "CLOSED", width - 6);
+        add_clipped(window, row, 4,
+                    info->open_after ? ui_text("OPEN", "開いている") :
+                                       ui_text("CLOSED", "閉じている"), width - 6);
         wattroff(window, A_BOLD);
     }
     wnoutrefresh(window);
@@ -1283,7 +1414,7 @@ static void draw_fd_info_popup(App *app) {
 }
 
 static void draw_help_popup(void) {
-    static const char *lines[] = {
+    static const char *english[] = {
         "Navigation", "  Tab         Switch pane", "  Up / k      Trace previous / Source scroll up",
         "  Down / j    Trace next / Source scroll down", "  PgUp/PgDn   Move focused pane one page",
         "  g / G       First/last in focused pane", "", "Search / Filter",
@@ -1292,17 +1423,30 @@ static void draw_help_popup(void) {
         "  r           Traces from current source line", "  Esc         Clear filters",
         "", "Detail", "  o           Jump to FD origin", "  i           Show FD info",
         "  s           Select stack source", "  P           Process graph", "", "Other",
-        "  ?           Help", "  q           Quit"
+        "  L           Switch UI language", "  ?           Help", "  q           Quit"
     };
-    WINDOW *window = create_popup("Help", (int)(sizeof(lines) / sizeof(lines[0])) + 2, 68);
+    static const char *japanese[] = {
+        "移動", "  Tab         ペイン切替", "  Up / k      前のTrace / Sourceを上へ",
+        "  Down / j    次のTrace / Sourceを下へ", "  PgUp/PgDn   選択ペインを1ページ移動",
+        "  g / G       選択ペインの先頭 / 末尾", "", "検索 / フィルター",
+        "  /           Trace全文検索", "  e           システムコールフィルター",
+        "  p           プロセス / スレッドフィルター",
+        "  r           現在のSource行からTraceを逆引き", "  Esc         フィルター解除",
+        "", "詳細", "  o           FD生成元へジャンプ", "  i           FD情報を表示",
+        "  s           StackからSourceを選択", "  P           プロセスツリー", "", "その他",
+        "  L           表示言語を切り替え", "  ?           ヘルプ", "  q           終了"
+    };
+    const char **lines = tui_japanese ? japanese : english;
+    size_t line_count = sizeof(english) / sizeof(english[0]);
+    WINDOW *window = create_popup(ui_text("Help", "ヘルプ"), (int)line_count + 2, 68);
     int height;
     int width;
     size_t i;
     if (!window) return;
     getmaxyx(window, height, width);
-    for (i = 0; i < sizeof(lines) / sizeof(lines[0]) && (int)i + 1 < height - 1; ++i) {
+    for (i = 0; i < line_count && (int)i + 1 < height - 1; ++i) {
         if (lines[i][0] && !isspace((unsigned char)lines[i][0])) wattron(window, A_BOLD);
-        mvwaddnstr(window, (int)i + 1, 2, lines[i], width - 4);
+        add_clipped(window, (int)i + 1, 2, lines[i], width - 4);
         wattroff(window, A_BOLD);
     }
     wnoutrefresh(window);
@@ -1325,10 +1469,11 @@ static void draw_syscall_popup(App *app) {
     if (height > rows - 4) height = rows - 4;
     width = cols - 8;
     if (width > 64) width = 64;
-    window = create_popup("Syscall Filter", height, width);
+    window = create_popup(ui_text("Syscall Filter", "システムコールフィルター"),
+                          height, width);
     if (!window) return;
     getmaxyx(window, height, width);
-    mvwprintw(window, 1, 2, "Search: %s%s", app->choice_search,
+    mvwprintw(window, 1, 2, ui_text("Search: %s%s", "検索: %s%s"), app->choice_search,
               app->choice_search_input ? "_" : "");
     item_rows = height - 5;
     if (app->choice_cursor >= visible_count) app->choice_cursor = visible_count - 1;
@@ -1349,9 +1494,13 @@ static void draw_syscall_popup(App *app) {
         if (visible_index == app->choice_cursor) wattroff(window, A_REVERSE | A_BOLD);
         else if (choice->checked) wattroff(window, COLOR_PAIR(COLOR_CHECKED));
     }
-    if (visible_count == 0) mvwaddstr(window, 3, 2, "No matching syscalls");
-    mvwaddnstr(window, height - 2, 2,
-               "Up/Down Move  Space Toggle  Enter Apply  Esc Cancel", width - 4);
+    if (visible_count == 0)
+        add_clipped(window, 3, 2,
+                    ui_text("No matching syscalls", "一致するシステムコールがありません"),
+                    width - 4);
+    add_clipped(window, height - 2, 2,
+                ui_text("Up/Down Move  Space Toggle  Enter Apply  Esc Cancel",
+                        "Up/Down 移動  Space 切替  Enter 適用  Esc 取消"), width - 4);
     wnoutrefresh(window);
     delwin(window);
 }
@@ -1371,7 +1520,8 @@ static void draw_process_popup(App *app) {
     if (height > rows - 4) height = rows - 4;
     width = cols - 8;
     if (width > 76) width = 76;
-    window = create_popup("Process / Thread Filter", height, width);
+    window = create_popup(ui_text("Process / Thread Filter",
+                                  "プロセス / スレッドフィルター"), height, width);
     if (!window) return;
     getmaxyx(window, height, width);
     item_rows = height - 4;
@@ -1389,23 +1539,29 @@ static void draw_process_popup(App *app) {
                     app->process_choice_scroll + i < (int)app->process_choice_count; ++i) {
         int index = app->process_choice_scroll + i;
         ProcessChoice *choice = &app->process_choices[index];
+        const char *name = strcmp(choice->name, "process") == 0 ?
+                           ui_text("process", "プロセス") : choice->name;
         char line[256];
         if (choice->pid == choice->tid)
-            snprintf(line, sizeof(line), "[%c] %-18s PID %d",
-                     choice->checked ? 'x' : ' ', choice->name, choice->pid);
+            snprintf(line, sizeof(line), "[%c] %s  PID %d",
+                     choice->checked ? 'x' : ' ', name, choice->pid);
         else
-            snprintf(line, sizeof(line), "[%c] %-18s PID %d  TID %d",
-                     choice->checked ? 'x' : ' ', choice->name, choice->pid, choice->tid);
+            snprintf(line, sizeof(line), "[%c] %s  PID %d  TID %d",
+                     choice->checked ? 'x' : ' ', name, choice->pid, choice->tid);
         if (index == app->process_choice_cursor) wattron(window, A_REVERSE | A_BOLD);
         else if (choice->checked) wattron(window, COLOR_PAIR(COLOR_CHECKED));
-        mvwaddnstr(window, i + 1, 2, line, width - 4);
+        add_clipped(window, i + 1, 2, line, width - 4);
         if (index == app->process_choice_cursor) wattroff(window, A_REVERSE | A_BOLD);
         else if (choice->checked) wattroff(window, COLOR_PAIR(COLOR_CHECKED));
     }
-    if (app->process_choice_count == 0) mvwaddstr(window, 1, 2, "No processes captured");
-    mvwaddnstr(window, height - 2, 2,
-               "Up/Down Move  Space Toggle  a All  n None  Enter Apply  Esc Cancel",
-               width - 4);
+    if (app->process_choice_count == 0)
+        add_clipped(window, 1, 2,
+                    ui_text("No processes captured", "取得したプロセスがありません"),
+                    width - 4);
+    add_clipped(window, height - 2, 2,
+                ui_text("Up/Down Move  Space Toggle  a All  n None  Enter Apply  Esc Cancel",
+                        "Up/Down 移動  Space 切替  a 全選択  n 全解除  Enter 適用  Esc 取消"),
+                width - 4);
     wnoutrefresh(window);
     delwin(window);
 }
@@ -1522,11 +1678,13 @@ static void append_graph_process(ProcessInfo *processes, size_t process_count,
                                  int selected_tid, GraphLine *lines,
                                  size_t *line_count, size_t line_cap) {
     ProcessInfo *process = &processes[index];
+    const char *name = strcmp(process->name, "process") == 0 ?
+                       ui_text("process", "プロセス") : process->name;
     size_t i;
     if (process->visited || *line_count >= line_cap) return;
     process->visited = true;
     snprintf(lines[*line_count].text, sizeof(lines[*line_count].text), "%*s%s%s[%d]",
-             depth * 3, "", depth ? "|- " : "", process->name, process->pid);
+             depth * 3, "", depth ? "|- " : "", name, process->pid);
     lines[*line_count].selected = selected_pid == process->pid &&
                                   selected_tid == process->pid;
     (*line_count)++;
@@ -1585,7 +1743,7 @@ static void draw_process_graph_popup(App *app) {
     if (height > rows - 4) height = rows - 4;
     width = cols - 8;
     if (width > 76) width = 76;
-    window = create_popup("Process Graph", height, width);
+    window = create_popup(ui_text("Process Graph", "プロセスツリー"), height, width);
     if (!window) goto done;
     getmaxyx(window, height, width);
     content = height - 2;
@@ -1596,7 +1754,7 @@ static void draw_process_graph_popup(App *app) {
     for (i = 0; i < (size_t)content && start + (int)i < (int)line_count; ++i) {
         GraphLine *line = &lines[start + i];
         if (line->selected) wattron(window, A_REVERSE | A_BOLD);
-        mvwaddnstr(window, (int)i + 1, 2, line->text, width - 4);
+        add_clipped(window, (int)i + 1, 2, line->text, width - 4);
         if (line->selected) wattroff(window, A_REVERSE | A_BOLD);
     }
     wnoutrefresh(window);
@@ -1628,10 +1786,12 @@ static void open_stack_popup(App *app) {
     event = &app->model.events[app->selected];
     if (event->frame_count == 0) return;
     adopted = trace_event_source_frame(event);
-    app->stack_cursor = adopted >= 0 ? adopted : 0;
-    if (adopted < 0) {
+    app->stack_cursor = 0;
+    if (adopted >= 0 && stack_frame_source_available(&event->frames[adopted])) {
+        app->stack_cursor = adopted;
+    } else {
         for (i = 0; i < event->frame_count; ++i) {
-            if (stack_frame_resolve(&event->frames[i])) {
+            if (stack_frame_source_available(&event->frames[i])) {
                 app->stack_cursor = (int)i;
                 break;
             }
@@ -1648,7 +1808,7 @@ static void move_stack_cursor(App *app, int direction) {
     event = &app->model.events[app->selected];
     index = app->stack_cursor + direction;
     while (index >= 0 && index < (int)event->frame_count) {
-        if (stack_frame_resolve(&event->frames[index])) {
+        if (stack_frame_source_available(&event->frames[index])) {
             app->stack_cursor = index;
             return;
         }
@@ -1665,7 +1825,7 @@ static void use_stack_source(App *app) {
     event = &app->model.events[app->selected];
     if (app->stack_cursor < 0 || app->stack_cursor >= (int)event->frame_count) return;
     frame = &event->frames[app->stack_cursor];
-    if (!stack_frame_resolve(frame)) return;
+    if (!stack_frame_source_available(frame)) return;
     path = strdup(frame->source_path);
     function = strdup(frame->source_function);
     if (!path || !function) {
@@ -1854,19 +2014,23 @@ int main(int argc, char **argv) {
     int rows;
     int status;
     int result = 0;
-    if (argc == 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
-        usage(stdout);
-        return 0;
-    }
+    setlocale(LC_ALL, "");
+    tui_japanese = language_is_japanese(LANGUAGE_AUTO);
     if (parse_cli(argc, argv, &cli) < 0) {
         usage(stderr);
         return 2;
     }
+    tui_japanese = language_is_japanese(cli.language);
+    if (cli.help) {
+        usage(stdout);
+        return 0;
+    }
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
-        fprintf(stderr, "strace-src: an interactive terminal is required\n");
+        fprintf(stderr, "%s\n",
+                ui_text("strace-src: an interactive terminal is required",
+                        "strace-src: 対話端末が必要です"));
         return 2;
     }
-    setlocale(LC_ALL, "");
     memset(&app, 0, sizeof(app));
     app.trace_fd = -1;
     app.strace_pid = -1;
@@ -1879,8 +2043,9 @@ int main(int argc, char **argv) {
     trace_model_init(&app.model);
     if (cli.replay) {
         if (trace_model_load(&app.model, cli.trace_path) < 0) {
-            fprintf(stderr, "strace-src: cannot open %s: %s\n", cli.trace_path,
-                    strerror(errno));
+            fprintf(stderr, ui_text("strace-src: cannot open %s: %s\n",
+                                    "strace-src: %sを開けません: %s\n"), cli.trace_path,
+                     strerror(errno));
             cleanup(&app);
             return 1;
         }
@@ -1937,6 +2102,10 @@ int main(int argc, char **argv) {
         if (key == 'i') { open_fd_info_popup(&app); continue; }
         if (key == 's') { open_stack_popup(&app); continue; }
         if (key == '?') { app.popup = POPUP_HELP; continue; }
+        if (key == 'L' && locale_is_utf8()) {
+            tui_japanese = !tui_japanese;
+            continue;
+        }
         if (key == 27) { clear_filters(&app); continue; }
         rows = getmaxy(stdscr);
         if (app.focused_pane == 1)
@@ -1948,11 +2117,14 @@ int main(int argc, char **argv) {
     stop_strace(&app);
     drain_trace(&app);
     if (app.save_path && trace_model_save(&app.model, app.save_path) < 0) {
-        fprintf(stderr, "strace-src: cannot save %s: %s\n", app.save_path,
-                strerror(errno));
+        fprintf(stderr, ui_text("strace-src: cannot save %s: %s\n",
+                                "strace-src: %sを保存できません: %s\n"), app.save_path,
+                 strerror(errno));
         result = 1;
     } else if (app.save_path) {
-        printf("Saved %zu trace events to %s\n", app.model.count, app.save_path);
+        printf(ui_text("Saved %zu trace events to %s\n",
+                       "%zu件のTraceを%sへ保存しました\n"),
+               app.model.count, app.save_path);
     }
     cleanup(&app);
     return result;

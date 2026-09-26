@@ -8,7 +8,7 @@ TARGET := strace-src
 SOURCES := main.c parser.c resolve.c filters.c trace_file.c fd_tracker.c
 OBJECTS := $(SOURCES:.c=.o)
 
-.PHONY: all clean test install uninstall
+.PHONY: all clean test example install uninstall
 
 all: $(TARGET)
 
@@ -48,7 +48,11 @@ test: $(TARGET) tests/parser_test tests/fixture tests/fd_fixture tests/resolve_t
 	./tests/filter_test
 	./tests/trace_file_test
 	./tests/fd_tracker_test
+	sh ./tests/language_test.sh ./$(TARGET)
 	@echo "All unit tests passed. Run ./strace-src ./tests/fixture in a terminal for the TUI smoke test."
+
+example: $(TARGET)
+	$(MAKE) -C examples/shared-library
 
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(DESTDIR)/usr/local/bin/$(TARGET)
@@ -58,3 +62,4 @@ uninstall:
 
 clean:
 	rm -f $(TARGET) $(OBJECTS) tests/parser_test tests/resolve_test tests/filter_test tests/trace_file_test tests/fd_tracker_test tests/fixture tests/process_fixture tests/fd_fixture
+	$(MAKE) -C examples/shared-library clean

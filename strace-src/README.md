@@ -25,6 +25,7 @@ Start a new non-interactive command:
 ```sh
 ./strace-src ./program arg1 arg2
 ./strace-src -o run.trace ./program arg1 arg2
+./strace-src --lang ja ./program arg1 arg2
 ```
 
 Attach to a running process:
@@ -38,6 +39,22 @@ Open a saved trace without starting a process:
 ```sh
 ./strace-src run.trace
 ```
+
+## Shared-library demo
+
+The example under `examples/shared-library` calls through two `.so` files
+before issuing `openat`, `write`, and `close`, making it useful for checking
+source resolution across shared-library frames:
+
+```sh
+make example
+cd examples/shared-library
+make trace
+```
+
+Search for `/strace-src-shared-library-demo`, select the matching trace, and
+press `s`. The Stack popup can switch the Source pane among `output.c`,
+`message.c`, and `main.c`.
 
 Trace files use the versioned `strace-src` binary format. They contain syscall
 text, PID/TID and process names, stack frames, and resolved source locations,
@@ -66,9 +83,24 @@ corrupt the TUI. They are deliberately not shown in v1 and are removed when
 | `o` | Jump to the trace that created the selected FD |
 | `i` | Show origin, history, target, and state for the selected FD |
 | `s` | Open the stack and choose the Source frame |
+| `L` | Switch the UI between Japanese and English |
 | `?` | Show keyboard help |
 | `Esc` | Clear all active filters |
 | `q` | Quit |
+
+## Language
+
+The UI supports `auto`, Japanese, and English modes:
+
+```sh
+./strace-src --lang auto ./program
+./strace-src --lang ja ./program
+./strace-src --lang en ./program
+```
+
+`auto` selects Japanese when the active locale is Japanese UTF-8 and English
+otherwise. Press `L` while the TUI is open to switch between Japanese and
+English immediately. Japanese display requires a UTF-8 locale.
 
 In the syscall menu, use `Up`/`Down` or `k`/`j` to move, `Space` to toggle,
 `a`/`n` to select all/none, `/` to search names, Enter to apply, and Esc to
@@ -95,7 +127,11 @@ the `dup` event and a second press reaches the original open.
 
 The Stack popup starts on the automatically selected Source frame. Use
 `Up`/`Down` or `k`/`j` to choose another source-resolved frame and Enter to use
-it in the Source pane. This override lasts only while that trace remains
+it in the Source pane. Frames whose source files are readable are shown in the
+source accent with `[source]`. A debug location whose file is not installed is
+dimmed and marked `[file unavailable]`; a frame that cannot be resolved is
+marked `[no source]`. Cursor movement skips both unavailable kinds. This
+override lasts only while that trace remains
 selected. Stack, FD Info, process graph, and help are temporary popups; their
 shortcut, Esc, or `q` closes them while tracing continues in the background.
 

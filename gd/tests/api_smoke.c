@@ -21,6 +21,9 @@ int main(int argc, char **argv) {
     if (gdb_run(&g)) return 12;
     if (!gdb_run(&g) || g.state != GDB_RUNNING ||
         !strstr(g.message, "already running")) return 28;
+    g.japanese = true;
+    if (!gdb_run(&g) || !strstr(g.message, "すでに実行中")) return 30;
+    g.japanese = false;
     if (wait_stopped(&g) || g.state != GDB_STOPPED || g.line != 12) return 12;
     if (!gdb_run(&g) || g.state != GDB_STOPPED ||
         !strstr(g.message, "press c")) return 29;

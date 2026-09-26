@@ -21,6 +21,10 @@ static void copy_text(char *dst, size_t size, const char *src) {
     dst[len] = '\0';
 }
 
+static const char *gtext(const Gdb *g, const char *english, const char *japanese) {
+    return g->japanese ? japanese : english;
+}
+
 static void append_output(Gdb *g, const char *text) {
     size_t n = strlen(text);
     if (n + g->output_len >= sizeof(g->output)) {
@@ -80,7 +84,7 @@ static void quote_mi(const char *src, char *dst, size_t size) {
 static void handle_async(Gdb *g, const char *line) {
     if (strstr(line, "*running")) {
         g->state = GDB_RUNNING;
-        copy_text(g->message, sizeof(g->message), "Program running");
+        copy_text(g->message, sizeof(g->message), gtext(g, "Program running", "プログラムを実行中"));
         g->changed = true;
     } else if (strstr(line, "*stopped")) {
         char reason[128] = "stopped";
@@ -125,7 +129,7 @@ static void handle_async(Gdb *g, const char *line) {
         if (!strcmp(reason, "exited-normally") || !strcmp(reason, "exited")) {
             g->state = GDB_EXITED;
             g->exit_code = mi_int(line, "exit-code", 0);
-            snprintf(g->message, sizeof(g->message), "Program exited (status=%d)", g->exit_code);
+            snprintf(g->message, sizeof(g->message), gtext(g, "Program exited (status=%d)", "プログラムが終了しました（status=%d）"), g->exit_code);
         } else {
             g->state = GDB_STOPPED;
             g->selected_frame = 0;
@@ -137,11 +141,11 @@ static void handle_async(Gdb *g, const char *line) {
             g->line = mi_int(line, "line", 0);
             g->source_available = g->fullname[0] && g->line > 0;
             if (g->catch_event[0])
-                snprintf(g->message, sizeof(g->message), "Caught %s%s%s%s%s",
+                snprintf(g->message, sizeof(g->message), gtext(g, "Caught %s%s%s%s%s", "捕捉: %s%s%s%s%s"),
                          g->catch_event,
                          g->catch_target[0] ? ": " : "", g->catch_target,
                          g->catch_phase[0] ? "  " : "", g->catch_phase);
-            else snprintf(g->message, sizeof(g->message), "Stopped: %s", reason);
+            else snprintf(g->message, sizeof(g->message), gtext(g, "Stopped: %s", "停止: %s"), reason);
         }
         g->changed = true;
     } else if (line[0] == '@' || line[0] == '~' || line[0] == '&') {
@@ -170,7 +174,7 @@ static int send_cmd(Gdb *g, const char *fmt, ...) {
     char line[8448];
     int n = snprintf(line, sizeof(line), "%d%s\n", token, command);
     if (write(g->to_gdb, line, (size_t)n) != n) {
-        copy_text(g->message, sizeof(g->message), "Failed to write to GDB");
+        copy_text(g->message, sizeof(g->message), gtext(g, "Failed to write to GDB", "GDBへの書込みに失敗しました"));
         return -1;
     }
     return token;
@@ -202,7 +206,7 @@ static int wait_result(Gdb *g, int token, char *result, size_t size) {
                     if (strstr(line, "^error")) {
                         char msg[GD_TEXT_MAX];
                         if (mi_string(line, "msg", msg, sizeof(msg)))
-                            snprintf(g->message, sizeof(g->message), "ERROR: %.1000s", msg);
+                            snprintf(g->message, sizeof(g->message), gtext(g, "ERROR: %.1000s", "エラー: %.1000s"), msg);
                         return -1;
                     }
                     return 0;
@@ -216,7 +220,7 @@ static int wait_result(Gdb *g, int token, char *result, size_t size) {
             }
         }
     }
-    copy_text(g->message, sizeof(g->message), "ERROR: GDB response timed out");
+    copy_text(g->message, sizeof(g->message), gtext(g, "ERROR: GDB response timed out", "エラー: GDBの応答がタイムアウトしました"));
     return -1;
 }
 
@@ -334,16 +338,16 @@ static int exec_simple(Gdb *g, const char *cmd) {
 }
 int gdb_run(Gdb *g) {
     if (g->state == GDB_RUNNING) {
-        copy_text(g->message, sizeof(g->message), "Program is already running");
+        copy_text(g->message, sizeof(g->message), gtext(g, "Program is already running", "プログラムはすでに実行中です"));
         return -1;
     }
     if (g->state == GDB_STOPPED) {
         copy_text(g->message, sizeof(g->message),
-                  "Program already started; press c to continue");
+                  gtext(g, "Program already started; press c to continue", "プログラムは開始済みです。cで続行してください"));
         return -1;
     }
     if (g->state == GDB_FAILED) {
-        copy_text(g->message, sizeof(g->message), "ERROR: GDB is unavailable");
+        copy_text(g->message, sizeof(g->message), gtext(g, "ERROR: GDB is unavailable", "エラー: GDBを使用できません"));
         return -1;
     }
     return exec_simple(g, "-exec-run");
@@ -359,7 +363,7 @@ int gdb_finish(Gdb *g) {
     if (g->frame_count == 1 && g->frames[0].level == 0) {
         int rc = exec_simple(g, "-exec-continue");
         if (!rc) copy_text(g->message, sizeof(g->message),
-                           "Outermost frame: continuing until program exit");
+                           gtext(g, "Outermost frame: continuing until program exit", "最外フレームです。プログラム終了まで続行します"));
         return rc;
     }
     return exec_simple(g, "-exec-finish");
@@ -369,13 +373,13 @@ int gdb_select_frame(Gdb *g, int level) {
     char result[4096];
     if (g->state != GDB_STOPPED) {
         copy_text(g->message, sizeof(g->message),
-                  "Stop the program before selecting a stack frame");
+                  gtext(g, "Stop the program before selecting a stack frame", "スタックフレームを選択する前にプログラムを停止してください"));
         return -1;
     }
     if (request(g, result, sizeof(result), "-stack-select-frame %d", level)) return -1;
     g->selected_frame = level;
     if (gdb_refresh(g)) return -1;
-    snprintf(g->message, sizeof(g->message), "Selected stack frame #%d", level);
+    snprintf(g->message, sizeof(g->message), gtext(g, "Selected stack frame #%d", "スタックフレーム #%d を選択しました"), level);
     return 0;
 }
 
@@ -384,7 +388,7 @@ static int break_at(Gdb *g, const char *file, int line, const char *condition) {
     snprintf(loc, sizeof(loc), "%s:%d", file, line); quote_mi(loc, qloc, sizeof(qloc));
     int rc = condition ? (quote_mi(condition, qcond, sizeof(qcond)), request(g, result, sizeof(result), "-break-insert -c %s %s", qcond, qloc))
                        : request(g, result, sizeof(result), "-break-insert %s", qloc);
-    if (!rc) { snprintf(g->message, sizeof(g->message), "Breakpoint set at %.700s:%d", file, line); gdb_refresh_breakpoints(g); }
+    if (!rc) { snprintf(g->message, sizeof(g->message), gtext(g, "Breakpoint set at %.700s:%d", "Breakpointを設定しました: %.700s:%d"), file, line); gdb_refresh_breakpoints(g); }
     return rc;
 }
 
@@ -405,7 +409,7 @@ int gdb_set_function_breakpoint(Gdb *g, const char *function) {
     bool pending = strstr(result, "<PENDING>") || strstr(result, "pending=");
     int rc = gdb_refresh_breakpoints(g);
     snprintf(g->message, sizeof(g->message), pending ?
-             "Breakpoint pending: %.850s" : "Breakpoint set: %.900s", function);
+             gtext(g, "Breakpoint pending: %.850s", "Breakpointを保留しました: %.850s") : gtext(g, "Breakpoint set: %.900s", "Breakpointを設定しました: %.900s"), function);
     return rc;
 }
 
@@ -437,12 +441,12 @@ static bool valid_catch_event(const char *event) {
 
 int gdb_set_catchpoint(Gdb *g, const char *event, const char *target) {
     if (!valid_catch_event(event)) {
-        copy_text(g->message, sizeof(g->message), "ERROR: unsupported catch event");
+        copy_text(g->message, sizeof(g->message), gtext(g, "ERROR: unsupported catch event", "エラー: 未対応のCatchイベントです"));
         return -1;
     }
     if ((!strcmp(event, "syscall") || !strcmp(event, "signal")) &&
         (!target || !target[0])) {
-        snprintf(g->message, sizeof(g->message), "ERROR: %s name is required", event);
+        snprintf(g->message, sizeof(g->message), gtext(g, "ERROR: %s name is required", "エラー: %s名が必要です"), event);
         return -1;
     }
     char command[1024], output[4096];
@@ -450,7 +454,7 @@ int gdb_set_catchpoint(Gdb *g, const char *event, const char *target) {
              target && target[0] ? " " : "", target && target[0] ? target : "");
     if (console_command(g, command, output, sizeof(output))) return -1;
     if (gdb_refresh_breakpoints(g)) return -1;
-    snprintf(g->message, sizeof(g->message), "Catchpoint set: %s%s%s", event,
+    snprintf(g->message, sizeof(g->message), gtext(g, "Catchpoint set: %s%s%s", "Catchpointを設定しました: %s%s%s"), event,
              target && target[0] ? " " : "", target && target[0] ? target : "");
     return 0;
 }
@@ -643,13 +647,13 @@ int gdb_list_functions(Gdb *g, const char *filter, GdbFunction *functions,
         p = end + 1;
     }
     if (*function_count)
-        snprintf(g->message, sizeof(g->message), "%d function candidate%s",
-                 *function_count, *function_count == 1 ? "" : "s");
+        snprintf(g->message, sizeof(g->message), gtext(g, "%d function candidate%s", "関数候補: %d件%s"),
+                 *function_count, g->japanese ? "" : (*function_count == 1 ? "" : "s"));
     else if (filter && filter[0])
-        copy_text(g->message, sizeof(g->message), "No matching function symbols.");
+        copy_text(g->message, sizeof(g->message), gtext(g, "No matching function symbols.", "一致する関数シンボルがありません。"));
     else
         copy_text(g->message, sizeof(g->message),
-                  "No function symbols available. Use address breakpoint in Assembly Mode.");
+                  gtext(g, "No function symbols available. Use address breakpoint in Assembly Mode.", "関数シンボルを取得できません。Assembly ModeでアドレスBreakpointを使用してください。"));
     return 0;
 }
 
@@ -695,7 +699,7 @@ int gdb_list_source_files(Gdb *g, GdbSourceFile *files, int max_files,
 
 int gdb_toggle_address_breakpoint(Gdb *g, const char *address) {
     if (!address || strncmp(address, "0x", 2)) {
-        copy_text(g->message, sizeof(g->message), "ERROR: invalid instruction address");
+        copy_text(g->message, sizeof(g->message), gtext(g, "ERROR: invalid instruction address", "エラー: 命令アドレスが不正です"));
         return -1;
     }
     unsigned long long target = strtoull(address, NULL, 16);
@@ -707,14 +711,14 @@ int gdb_toggle_address_breakpoint(Gdb *g, const char *address) {
     }
     char result[16384];
     if (request(g, result, sizeof(result), "-break-insert *%s", address)) return -1;
-    snprintf(g->message, sizeof(g->message), "Breakpoint set: *%.900s", address);
+    snprintf(g->message, sizeof(g->message), gtext(g, "Breakpoint set: *%.900s", "Breakpointを設定しました: *%.900s"), address);
     return gdb_refresh_breakpoints(g);
 }
 
 int gdb_watch(Gdb *g, const char *expression) {
     char q[2048], result[8192]; quote_mi(expression, q, sizeof(q));
     int rc = request(g, result, sizeof(result), "-break-watch %s", q);
-    if (!rc) { snprintf(g->message, sizeof(g->message), "Watchpoint set: %.900s", expression); gdb_refresh_breakpoints(g); }
+    if (!rc) { snprintf(g->message, sizeof(g->message), gtext(g, "Watchpoint set: %.900s", "Watchpointを設定しました: %.900s"), expression); gdb_refresh_breakpoints(g); }
     return rc;
 }
 
@@ -736,11 +740,11 @@ int gdb_assign_expression(Gdb *g, const char *expression, const char *new_value,
                           char *actual, size_t actual_size) {
     if (g->state != GDB_STOPPED) {
         copy_text(g->message, sizeof(g->message),
-                  "Stop the program before modifying a value");
+                  gtext(g, "Stop the program before modifying a value", "値を変更する前にプログラムを停止してください"));
         return -1;
     }
     if (!expression || !expression[0] || !new_value || !new_value[0]) {
-        copy_text(g->message, sizeof(g->message), "ERROR: expression and value are required");
+        copy_text(g->message, sizeof(g->message), gtext(g, "ERROR: expression and value are required", "エラー: 式と値が必要です"));
         return -1;
     }
     char assignment[4096], quoted[8192], result[16384];
@@ -760,7 +764,7 @@ int gdb_assign_expression(Gdb *g, const char *expression, const char *new_value,
 int gdb_assign_register(Gdb *g, const char *name, const char *new_value,
                         char *actual, size_t actual_size) {
     if (!name || !name[0]) {
-        copy_text(g->message, sizeof(g->message), "ERROR: register name is required");
+        copy_text(g->message, sizeof(g->message), gtext(g, "ERROR: register name is required", "エラー: レジスタ名が必要です"));
         return -1;
     }
     char expression[128];
@@ -797,7 +801,7 @@ int gdb_current_return_type(Gdb *g, char *type, size_t type_size,
 int gdb_force_return(Gdb *g, const char *value) {
     if (g->state != GDB_STOPPED) {
         copy_text(g->message, sizeof(g->message),
-                  "Stop the program before forcing a return");
+                  gtext(g, "Stop the program before forcing a return", "強制returnの前にプログラムを停止してください"));
         return -1;
     }
     char command[4096], quoted[8192], result[16384];
@@ -825,7 +829,7 @@ int gdb_force_return(Gdb *g, const char *value) {
         char actual[GD_TEXT_MAX];
         if (gdb_assign_register(g, "rax", value, actual, sizeof(actual))) return -1;
         copy_text(g->message, sizeof(g->message),
-                  "Forced return using raw System V integer result register rax");
+                  gtext(g, "Forced return using raw System V integer result register rax", "System V整数戻り値レジスタraxを使用して強制returnしました"));
         return 0;
     }
     return gdb_refresh(g);
@@ -875,7 +879,7 @@ int gdb_inspect_address(Gdb *g, const char *expression, GdbAddressInfo *info) {
     copy_text(info->expression, sizeof(info->expression), expression);
     if (g->state != GDB_STOPPED) {
         copy_text(g->message, sizeof(g->message),
-                  "Stop the program before inspecting addresses");
+                  gtext(g, "Stop the program before inspecting addresses", "アドレスを確認する前にプログラムを停止してください"));
         return -1;
     }
 
@@ -884,7 +888,7 @@ int gdb_inspect_address(Gdb *g, const char *expression, GdbAddressInfo *info) {
     if (request(g, result, sizeof(result), "-var-create - * %s", quoted)) return -1;
     if (!mi_string(result, "name", object, sizeof(object))) {
         copy_text(g->message, sizeof(g->message),
-                  "ERROR: GDB did not create a variable object");
+                  gtext(g, "ERROR: GDB did not create a variable object", "エラー: GDBが変数オブジェクトを作成できませんでした"));
         return -1;
     }
     mi_string(result, "type", info->type, sizeof(info->type));
@@ -900,7 +904,7 @@ int gdb_inspect_address(Gdb *g, const char *expression, GdbAddressInfo *info) {
         copy_text(info->address, sizeof(info->address), "<optimized out>");
         copy_text(info->points_to, sizeof(info->points_to), "<optimized out>");
         snprintf(g->message, sizeof(g->message),
-                 "Address unavailable (optimized out): %.700s", expression);
+                 gtext(g, "Address unavailable (optimized out): %.700s", "アドレスを取得できません（最適化により削除）: %.700s"), expression);
         return 0;
     }
 
@@ -930,7 +934,7 @@ int gdb_inspect_address(Gdb *g, const char *expression, GdbAddressInfo *info) {
     } else {
         copy_text(info->address, sizeof(info->address), "<unavailable>");
     }
-    snprintf(g->message, sizeof(g->message), "Address details: %.800s", expression);
+    snprintf(g->message, sizeof(g->message), gtext(g, "Address details: %.800s", "アドレス詳細: %.800s"), expression);
     return 0;
 }
 
@@ -955,7 +959,7 @@ int gdb_list_children(Gdb *g, const char *expression, GdbChild *children,
     quote_mi(expression, quoted, sizeof(quoted));
     if (request(g, result, sizeof(result), "-var-create - * %s", quoted)) return -1;
     if (!mi_string(result, "name", object, sizeof(object))) {
-        copy_text(g->message, sizeof(g->message), "ERROR: GDB did not create a variable object");
+        copy_text(g->message, sizeof(g->message), gtext(g, "ERROR: GDB did not create a variable object", "エラー: GDBが変数オブジェクトを作成できませんでした"));
         return -1;
     }
     mi_string(result, "type", parent_type, sizeof(parent_type));
@@ -988,7 +992,7 @@ int gdb_list_children(Gdb *g, const char *expression, GdbChild *children,
     request(g, cleanup, sizeof(cleanup), "-var-delete %s", object);
     if (!rc) {
         snprintf(g->message, sizeof(g->message), *child_count ?
-                 "Expanded %.700s (%d children)" : "No children: %.900s",
+                 gtext(g, "Expanded %.700s (%d children)", "展開しました: %.700s（子要素%d件）") : gtext(g, "No children: %.900s", "子要素がありません: %.900s"),
                  expression, *child_count);
     }
     return rc;
@@ -997,12 +1001,12 @@ int gdb_list_children(Gdb *g, const char *expression, GdbChild *children,
 int gdb_delete_breakpoint(Gdb *g, int number) {
     char result[4096];
     if (request(g, result, sizeof(result), "-break-delete %d", number)) return -1;
-    snprintf(g->message, sizeof(g->message), "Breakpoint %d deleted", number); return gdb_refresh_breakpoints(g);
+    snprintf(g->message, sizeof(g->message), gtext(g, "Breakpoint %d deleted", "Breakpoint %dを削除しました"), number); return gdb_refresh_breakpoints(g);
 }
 int gdb_enable_breakpoint(Gdb *g, int number, bool enable) {
     char result[4096];
     if (request(g, result, sizeof(result), "-break-%s %d", enable ? "enable" : "disable", number)) return -1;
-    snprintf(g->message, sizeof(g->message), "Breakpoint %d %s", number, enable ? "enabled" : "disabled"); return gdb_refresh_breakpoints(g);
+    snprintf(g->message, sizeof(g->message), gtext(g, "Breakpoint %d %s", "Breakpoint %dを%sにしました"), number, enable ? gtext(g,"enabled","有効") : gtext(g,"disabled","無効")); return gdb_refresh_breakpoints(g);
 }
 
 static const char *mi_list_end(const char *start) {
@@ -1292,16 +1296,16 @@ static void refresh_disassembly(Gdb *g) {
 int gdb_disassemble_at(Gdb *g, const char *address) {
     if (!address || !address[0] || address[0] == '<') {
         copy_text(g->message, sizeof(g->message),
-                  "Function address is not currently available");
+                  gtext(g, "Function address is not currently available", "関数アドレスを現在取得できません"));
         return -1;
     }
     refresh_disassembly_at_address(g, address);
     if (!g->instruction_count) {
         copy_text(g->message, sizeof(g->message),
-                  "Disassembly is unavailable for this function");
+                  gtext(g, "Disassembly is unavailable for this function", "この関数を逆アセンブルできません"));
         return -1;
     }
-    snprintf(g->message, sizeof(g->message), "Viewing function at %.900s", address);
+    snprintf(g->message, sizeof(g->message), gtext(g, "Viewing function at %.900s", "関数を表示中: %.900s"), address);
     return 0;
 }
 

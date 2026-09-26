@@ -141,6 +141,7 @@ typedef struct {
     char catch_phase[32];
     char catch_detail[512];
     char stop_thread[64];
+    bool japanese;
     bool changed;
 } Gdb;
 

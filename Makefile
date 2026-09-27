@@ -1,6 +1,6 @@
-.PHONY: all procview testforge autotest-assist-tui gd ltree strace-src clean
+.PHONY: all procview testforge autotest-assist-tui gd ltree strace-src pps clean
 
-all: procview testforge autotest-assist-tui gd ltree strace-src
+all: procview testforge autotest-assist-tui gd ltree strace-src pps
 
 procview:
 	$(MAKE) -C procview
@@ -20,6 +20,9 @@ ltree:
 strace-src:
 	$(MAKE) -C strace-src
 
+pps:
+	$(MAKE) -C pps build
+
 clean:
 	$(MAKE) -C procview clean
 	$(MAKE) -C testforge clean
@@ -27,3 +30,4 @@ clean:
 	$(MAKE) -C gd clean
 	$(MAKE) -C ltree clean
 	$(MAKE) -C strace-src clean
+	$(MAKE) -C pps clean

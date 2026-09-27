@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+printf '%s\n' 'pps: unsupported shell or Bash integration is not loaded.' \
+    'pps requires interactive Bash integration.' >&2
+exit 2

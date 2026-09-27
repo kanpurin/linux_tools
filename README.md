@@ -9,6 +9,7 @@ Linux 向け TUI ツール集です。
 - `gd/` - GDB/MIをバックエンドにした軽量ソースデバッグTUI
 - `ltree/` - ディレクトリ構成を木形式で表示する軽量 `ltree` コマンド
 - `strace-src/` - straceイベントと発生元ソースを同期表示する2ペインTUI
+- `pps/` - `/proc` を直接読む、選択可能な `ps aux | less` 風プロセスピッカー
 
 ## Build
 
@@ -24,6 +25,7 @@ make -C testforge
 make -C gd
 make -C ltree
 make -C strace-src
+make -C pps
 ```
 
 ## Run
@@ -34,6 +36,7 @@ make -C strace-src
 ./gd/gd ./program arg1 arg2
 ./ltree/ltree [directory]
 ./strace-src/strace-src ./program arg1 arg2
+source ./pps/shell/pps.bash
 ```
 
 To install `gd` as a persistent system command:

@@ -18,4 +18,5 @@ strace-src/tests/fd_fixture
 strace-src/*.trace
 strace-src/examples/shared-library/shared-demo
 strace-src/examples/shared-library/*.so
+lifewatch/lifewatch
 pps/bin/pps-core

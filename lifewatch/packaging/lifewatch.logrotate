@@ -1,0 +1,8 @@
+/var/log/lifewatch/notifications.log {
+    weekly
+    rotate 12
+    compress
+    missingok
+    notifempty
+    create 0640 root adm
+}

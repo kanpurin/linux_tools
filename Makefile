@@ -1,6 +1,6 @@
-.PHONY: all procview testforge autotest-assist-tui gd ltree strace-src pps clean
+.PHONY: all procview testforge autotest-assist-tui gd ltree strace-src lifewatch pps clean
 
-all: procview testforge autotest-assist-tui gd ltree strace-src pps
+all: procview testforge autotest-assist-tui gd ltree strace-src lifewatch pps
 
 procview:
 	$(MAKE) -C procview
@@ -20,6 +20,9 @@ ltree:
 strace-src:
 	$(MAKE) -C strace-src
 
+lifewatch:
+	$(MAKE) -C lifewatch
+
 pps:
 	$(MAKE) -C pps build
 
@@ -30,4 +33,5 @@ clean:
 	$(MAKE) -C gd clean
 	$(MAKE) -C ltree clean
 	$(MAKE) -C strace-src clean
+	$(MAKE) -C lifewatch clean
 	$(MAKE) -C pps clean

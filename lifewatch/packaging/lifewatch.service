@@ -1,0 +1,21 @@
+[Unit]
+Description=lifewatch process and file monitor
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/lifewatch daemon --config /etc/lifewatch.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+User=root
+Group=root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log/lifewatch
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

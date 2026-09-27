@@ -19,8 +19,9 @@
 #define PATH_MAX 4096
 #endif
 
-#define VERSION "2.3.0"
+#define VERSION "2.3.1"
 #define SIZE_CACHE_BUCKETS 4099
+#define IDENTITY_MAX 256
 
 typedef enum {
     SORT_NAME,
@@ -70,6 +71,13 @@ typedef struct SizeCache {
     struct SizeCache *next;
 } SizeCache;
 
+typedef struct {
+    size_t links;
+    size_t owner;
+    size_t group;
+    size_t size;
+} ColumnWidths;
+
 static Options options = {
     .report = true,
     .color = -1,
@@ -78,6 +86,7 @@ static Options options = {
 };
 static bool use_color;
 static SizeCache *size_cache[SIZE_CACHE_BUCKETS];
+static ColumnWidths column_widths = {1, 1, 1, 1};
 
 static void usage(FILE *out)
 {
@@ -225,6 +234,32 @@ static const char *modification_time(time_t value, char buf[32])
     return buf;
 }
 
+static void identity_text(const struct stat *st, char owner[IDENTITY_MAX],
+                          char group[IDENTITY_MAX])
+{
+    struct passwd *password = options.numeric_ids ? NULL : getpwuid(st->st_uid);
+    struct group *group_entry;
+
+    if (password != NULL)
+        snprintf(owner, IDENTITY_MAX, "%s", password->pw_name);
+    else
+        snprintf(owner, IDENTITY_MAX, "%ju", (uintmax_t)st->st_uid);
+
+    group_entry = options.numeric_ids ? NULL : getgrgid(st->st_gid);
+    if (group_entry != NULL)
+        snprintf(group, IDENTITY_MAX, "%s", group_entry->gr_name);
+    else
+        snprintf(group, IDENTITY_MAX, "%ju", (uintmax_t)st->st_gid);
+}
+
+static const char *size_text(uintmax_t value, char buf[32])
+{
+    if (options.human_size)
+        return human_size(value, buf);
+    snprintf(buf, 32, "%ju", value);
+    return buf;
+}
+
 static const char *color_for(const struct stat *st, bool stat_ok)
 {
     if (!use_color || !stat_ok)
@@ -267,33 +302,26 @@ static void print_metadata(const struct stat *st, bool stat_ok,
     char mode[11];
     char size[32];
     char date[32];
-    char owner_number[32];
-    char group_number[32];
-    const char *owner;
-    const char *group;
-    struct passwd *password;
-    struct group *group_entry;
+    char owner[IDENTITY_MAX];
+    char group[IDENTITY_MAX];
 
     if (!options.long_format)
         return;
     if (!stat_ok) {
-        fputs("??????????   ? ?        ?               ? ", stdout);
+        printf("?????????? %*s %-*s %-*s %*s %s ",
+               (int)column_widths.links, "?",
+               (int)column_widths.owner, "?",
+               (int)column_widths.group, "?",
+               (int)column_widths.size, "?", "<invalid time>");
         return;
     }
 
-    snprintf(owner_number, sizeof(owner_number), "%ju", (uintmax_t)st->st_uid);
-    snprintf(group_number, sizeof(group_number), "%ju", (uintmax_t)st->st_gid);
-    password = options.numeric_ids ? NULL : getpwuid(st->st_uid);
-    group_entry = options.numeric_ids ? NULL : getgrgid(st->st_gid);
-    owner = password != NULL ? password->pw_name : owner_number;
-    group = group_entry != NULL ? group_entry->gr_name : group_number;
-
-    printf("%s %3ju %-8s %-8s ", mode_text(st->st_mode, mode),
-           (uintmax_t)st->st_nlink, owner, group);
-    if (options.human_size)
-        printf("%7s ", human_size(displayed_size, size));
-    else
-        printf("%11ju ", displayed_size);
+    identity_text(st, owner, group);
+    printf("%s %*ju %-*s %-*s %*s ", mode_text(st->st_mode, mode),
+           (int)column_widths.links, (uintmax_t)st->st_nlink,
+           (int)column_widths.owner, owner,
+           (int)column_widths.group, group,
+           (int)column_widths.size, size_text(displayed_size, size));
     printf("%s ", modification_time(st->st_mtime, date));
 }
 
@@ -438,6 +466,69 @@ static void free_size_cache(void)
         }
         size_cache[bucket] = NULL;
     }
+}
+
+static void update_width(size_t *width, size_t value)
+{
+    if (value > *width)
+        *width = value;
+}
+
+static void measure_stat_columns(const struct stat *st, uintmax_t displayed_size)
+{
+    char links[32];
+    char owner[IDENTITY_MAX];
+    char group[IDENTITY_MAX];
+    char size[32];
+
+    snprintf(links, sizeof(links), "%ju", (uintmax_t)st->st_nlink);
+    identity_text(st, owner, group);
+    size_text(displayed_size, size);
+    update_width(&column_widths.links, strlen(links));
+    update_width(&column_widths.owner, strlen(owner));
+    update_width(&column_widths.group, strlen(group));
+    update_width(&column_widths.size, strlen(size));
+}
+
+static void measure_directory_columns(const char *path, long depth,
+                                      dev_t root_device)
+{
+    DIR *dir = opendir(path);
+    struct dirent *item;
+
+    if (dir == NULL)
+        return;
+    while ((item = readdir(dir)) != NULL) {
+        char *child_path;
+        struct stat child_stat;
+        bool is_dir;
+        uintmax_t displayed_size;
+
+        if (!strcmp(item->d_name, ".") || !strcmp(item->d_name, ".."))
+            continue;
+        if (!options.all && item->d_name[0] == '.')
+            continue;
+        child_path = join_path(path, item->d_name);
+        if (lstat(child_path, &child_stat) != 0) {
+            free(child_path);
+            continue;
+        }
+        is_dir = S_ISDIR(child_stat.st_mode);
+        if (options.dirs_only && !is_dir) {
+            free(child_path);
+            continue;
+        }
+        displayed_size = stat_size(&child_stat);
+        if (options.du && is_dir)
+            displayed_size = directory_total(child_path, root_device);
+        measure_stat_columns(&child_stat, displayed_size);
+
+        if (is_dir && (options.max_depth < 0 || depth + 1 < options.max_depth) &&
+            (!options.one_filesystem || child_stat.st_dev == root_device))
+            measure_directory_columns(child_path, depth + 1, root_device);
+        free(child_path);
+    }
+    closedir(dir);
 }
 
 static Entry *read_entries(const char *path, size_t *count, Totals *totals)
@@ -642,6 +733,23 @@ int main(int argc, char **argv)
     int path_count = argc - optind;
     if (path_count == 0)
         path_count = 1;
+
+    if (options.long_format) {
+        for (int i = 0; i < path_count; i++) {
+            const char *path = argc == optind ? "." : argv[optind + i];
+            struct stat st;
+            uintmax_t displayed_size;
+
+            if (lstat(path, &st) != 0)
+                continue;
+            displayed_size = stat_size(&st);
+            if (options.du && S_ISDIR(st.st_mode))
+                displayed_size = directory_total(path, st.st_dev);
+            measure_stat_columns(&st, displayed_size);
+            if (S_ISDIR(st.st_mode) && !options.directory_as_file)
+                measure_directory_columns(path, 0, st.st_dev);
+        }
+    }
 
     for (int i = 0; i < path_count; i++) {
         const char *path = argc == optind ? "." : argv[optind + i];

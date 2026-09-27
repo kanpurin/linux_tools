@@ -49,6 +49,10 @@ printf '%s\n' "$OUTPUT" | grep -F 'link@ -> alpha/file.txt' >/dev/null
 
 OUTPUT=$($LTREE --ascii -R -lh "$WORK/root")
 printf '%s\n' "$OUTPUT" | grep -E -- '^-rw-r--r-- +1 +[^ ]+ +[^ ]+ +6B +2020-01-02 03:04 \|   `-- file\.txt' >/dev/null
+if printf '%s\n' "$OUTPUT" | grep -E -- '^-rw-r--r-- +1 +[^ ]+ {2,}[^ ]+' >/dev/null; then
+    echo 'long-format identity columns contain unnecessary padding' >&2
+    exit 1
+fi
 
 OUTPUT=$($LTREE --ascii -R -l "$WORK/root")
 printf '%s\n' "$OUTPUT" | grep -E -- '^-rw-r--r-- +1 +[^ ]+ +[^ ]+ +6 +2020-01-02 03:04 \|   `-- file\.txt' >/dev/null

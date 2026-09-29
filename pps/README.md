@@ -87,10 +87,12 @@ A name with one match is handled immediately. Multiple matches open Process Sele
 
 TUI output goes directly to `/dev/tty`; stdout is reserved for the small internal protocol used by `pps.bash`. Terminal state is restored on normal exit, cancellation, Ctrl-C, and termination signals.
 
+The unfiltered Process Select loads process details as rows become visible. Processes that exit before their rows are loaded are removed from the list. Searching or sorting by CPU, memory, start time, or CPU time loads the remaining rows; `r` rescans `/proc`.
+
 ## Test
 
 ```bash
 make test
 ```
 
-The automated suite covers non-interactive process views, not-found behavior, and launcher behavior. Interactive key handling should be checked in a real terminal after sourcing `shell/pps.bash`.
+The automated suite covers non-interactive process views, not-found behavior, launcher behavior, and Process Select interaction through a pseudo-terminal when Python 3 is available. Manual checking in a real terminal is still useful after sourcing `shell/pps.bash`.

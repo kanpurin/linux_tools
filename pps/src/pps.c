@@ -17,6 +17,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
@@ -44,6 +45,7 @@ typedef struct {
 typedef struct {
     Process *v;
     size_t n, cap;
+    unsigned long long snapshot_ticks;
 } ProcessList;
 
 typedef enum { SORT_PID, SORT_CPU, SORT_MEM, SORT_START, SORT_TIME } SortKey;
@@ -64,6 +66,7 @@ typedef struct {
     char filter[4096];
     char search[1024];
     char message[1024];
+    bool lazy;
 } UI;
 
 static long g_hz;
@@ -309,6 +312,65 @@ static void list_add(ProcessList *l, const Process *p) {
     l->v[l->n++] = *p;
 }
 
+static void list_remove(ProcessList *l, size_t at) {
+    free(l->v[at].row);
+    l->n--;
+    if (at < l->n)
+        memmove(&l->v[at], &l->v[at + 1], (l->n - at) * sizeof *l->v);
+}
+
+static bool materialize_process(ProcessList *l, size_t at) {
+    Process *p = &l->v[at];
+    if (p->row) return true;
+    Process loaded;
+    if (!load_process_basic(p->pid, &loaded)) return false;
+    /* A PID reused after enumeration must not become a row in this snapshot. */
+    if (loaded.start_ticks > l->snapshot_ticks) return false;
+    complete_process(&loaded, true);
+    *p = loaded;
+    return true;
+}
+
+static void materialize_all(ProcessList *l) {
+    size_t kept = 0;
+    for (size_t i = 0; i < l->n; i++) {
+        if (!materialize_process(l, i)) {
+            free(l->v[i].row);
+            continue;
+        }
+        if (kept != i) l->v[kept] = l->v[i];
+        kept++;
+    }
+    l->n = kept;
+}
+
+static bool same_process(const Process *p) {
+    Process current = {0};
+    return p->row && parse_stat(p->pid, &current) &&
+           current.start_ticks == p->start_ticks;
+}
+
+static int signal_selected_process(const Process *p, int sig) {
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    int fd = (int)syscall(SYS_pidfd_open, p->pid, 0);
+    if (fd >= 0) {
+        if (!same_process(p)) {
+            close(fd);
+            errno = ESTALE;
+            return -1;
+        }
+        int rc = (int)syscall(SYS_pidfd_send_signal, fd, sig, NULL, 0);
+        int saved = errno;
+        close(fd);
+        if (rc == 0) return 0;
+        if (saved != ENOSYS) { errno = saved; return -1; }
+    } else if (errno != ENOSYS && errno != EINVAL) return -1;
+#endif
+    /* Older kernels lack pidfds; keep the identity check immediately before kill. */
+    if (!same_process(p)) { errno = ESTALE; return -1; }
+    return kill(p->pid, sig);
+}
+
 static bool matches(const Process *p, const char *needle) {
     return !needle || !*needle || strstr(p->comm, needle) || strstr(p->command, needle);
 }
@@ -338,6 +400,31 @@ static bool scan_processes(ProcessList *out, const char *filter) {
         list_add(out, &p);
     }
     closedir(d);
+    return true;
+}
+
+static bool scan_pids(ProcessList *out) {
+    DIR *d = opendir("/proc");
+    if (!d) return false;
+    load_system_info();
+    pid_t self = getpid();
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (!numeric(de->d_name)) continue;
+        char *end;
+        long n = strtol(de->d_name, &end, 10);
+        if (*end || n <= 0 || n > INT_MAX || (pid_t)n == self) continue;
+        Process p = {0};
+        p.pid = (pid_t)n;
+        list_add(out, &p);
+    }
+    closedir(d);
+    struct timespec now;
+    if (clock_gettime(CLOCK_BOOTTIME, &now) == 0)
+        out->snapshot_ticks = (unsigned long long)now.tv_sec * (unsigned long long)g_hz +
+                              (unsigned long long)now.tv_nsec * (unsigned long long)g_hz / 1000000000ULL;
+    else
+        out->snapshot_ticks = ULLONG_MAX;
     return true;
 }
 
@@ -495,6 +582,39 @@ static void keep_visible(UI *ui) {
     if (ui->top > ui->list.n) ui->top = ui->list.n;
 }
 
+static void ui_remove_process(UI *ui, size_t at) {
+    list_remove(&ui->list, at);
+    if (ui->selected > at) ui->selected--;
+    if (ui->list.n == 0) ui->selected = 0;
+    else if (ui->selected >= ui->list.n) ui->selected = ui->list.n - 1;
+    if (ui->top > at) ui->top--;
+    if (ui->top > ui->list.n) ui->top = ui->list.n;
+}
+
+static void ui_materialize_visible(UI *ui) {
+    size_t page = ui->rows > 2 ? (size_t)ui->rows - 2 : 1;
+    for (;;) {
+        keep_visible(ui);
+        bool removed = false;
+        for (size_t i = ui->top; i < ui->list.n && i - ui->top < page; ) {
+            if (materialize_process(&ui->list, i)) i++;
+            else { ui_remove_process(ui, i); removed = true; }
+        }
+        if (!removed) break;
+    }
+}
+
+static void ui_materialize_all(UI *ui) {
+    pid_t selected = ui->list.n ? ui->list.v[ui->selected].pid : 0;
+    size_t previous = ui->selected;
+    materialize_all(&ui->list);
+    ssize_t at = find_pid(&ui->list, selected);
+    if (at >= 0) ui->selected = (size_t)at;
+    else if (ui->list.n) ui->selected = previous < ui->list.n ? previous : ui->list.n - 1;
+    else ui->selected = 0;
+    keep_visible(ui);
+}
+
 static void ui_draw_status(UI *ui) {
     char status[1200];
     if (*ui->message) snprintf(status, sizeof status, "%s", ui->message);
@@ -519,6 +639,7 @@ static void ui_draw_process_row(UI *ui, size_t index) {
 static void ui_draw(UI *ui) {
     ui_size(ui);
     keep_visible(ui);
+    if (ui->lazy) ui_materialize_visible(ui);
     ui->buffering = true;
     /* The alternate screen is cleared once in ui_begin().  Clearing it again
        for every key press produces a very visible flash, especially over
@@ -581,6 +702,8 @@ static bool prompt_input(UI *ui, const char *label, char *out, size_t cap) {
 
 static bool search_move(UI *ui, bool forward) {
     if (!*ui->search || !ui->list.n) return false;
+    if (ui->lazy) ui_materialize_all(ui);
+    if (!ui->list.n) return false;
     size_t i = ui->selected;
     for (size_t step = 0; step < ui->list.n; step++) {
         i = forward ? (i + 1) % ui->list.n : (i + ui->list.n - 1) % ui->list.n;
@@ -642,10 +765,11 @@ static void refresh_ui(UI *ui) {
     pid_t oldpid = ui->list.n ? ui->list.v[ui->selected].pid : 0;
     size_t oldpos = ui->selected;
     ProcessList fresh = {0};
-    if (!scan_processes(&fresh, ui->filter)) {
+    if (!(ui->lazy ? scan_pids(&fresh) : scan_processes(&fresh, ui->filter))) {
         snprintf(ui->message, sizeof ui->message, "pps: cannot read /proc: %s", strerror(errno));
         return;
     }
+    if (ui->lazy && ui->sort != SORT_PID) materialize_all(&fresh);
     sort_list(&fresh, ui->sort, ui->descending);
     list_free(&ui->list); ui->list = fresh;
     ssize_t at = find_pid(&ui->list, oldpid);
@@ -666,8 +790,12 @@ static void sort_menu(UI *ui) {
         pid_t pid = ui->list.n ? ui->list.v[ui->selected].pid : 0;
         if (key == ui->sort) ui->descending = !ui->descending;
         else { ui->sort = key; ui->descending = key == SORT_CPU || key == SORT_MEM || key == SORT_TIME; }
+        if (ui->lazy && ui->sort != SORT_PID) materialize_all(&ui->list);
         sort_list(&ui->list, ui->sort, ui->descending);
-        ssize_t at = find_pid(&ui->list, pid); if (at >= 0) ui->selected = (size_t)at;
+        ssize_t at = find_pid(&ui->list, pid);
+        if (at >= 0) ui->selected = (size_t)at;
+        else if (ui->list.n && ui->selected >= ui->list.n) ui->selected = ui->list.n - 1;
+        else if (!ui->list.n) ui->selected = 0;
     }
     ui->message[0] = '\0';
 }
@@ -675,6 +803,7 @@ static void sort_menu(UI *ui) {
 static void send_ui_signal(UI *ui) {
     if (!ui->list.n) return;
     pid_t pid = ui->list.v[ui->selected].pid;
+    unsigned long long start_ticks = ui->list.v[ui->selected].start_ticks;
     snprintf(ui->message, sizeof ui->message,
              "Signal: [t]TERM [k]KILL [s]STOP [c]CONT [h]HUP [1]USR1 [2]USR2 [o]Other  Esc:cancel");
     ui_draw(ui);
@@ -689,9 +818,20 @@ static void send_ui_signal(UI *ui) {
         if (sig < 0) { snprintf(ui->message, sizeof ui->message, "pps: invalid signal '%s'", name); return; }
     }
     if (sig < 0) { ui->message[0] = '\0'; return; }
-    if (kill(pid, sig) != 0) {
-        if (errno == ESRCH) snprintf(ui->message, sizeof ui->message, "pps: process %d no longer exists", pid);
-        else snprintf(ui->message, sizeof ui->message, "pps: cannot signal %d: %s", pid, strerror(errno));
+    ssize_t at = find_pid(&ui->list, pid);
+    if (at < 0 || ui->list.v[at].start_ticks != start_ticks) {
+        refresh_ui(ui);
+        snprintf(ui->message, sizeof ui->message, "pps: process %d no longer exists or changed", pid);
+        return;
+    }
+    Process *selected = &ui->list.v[at];
+    if (signal_selected_process(selected, sig) != 0) {
+        int failure = errno;
+        if (failure == ESRCH || failure == ESTALE) {
+            refresh_ui(ui);
+            snprintf(ui->message, sizeof ui->message, "pps: process %d no longer exists or changed", pid);
+        } else
+            snprintf(ui->message, sizeof ui->message, "pps: cannot signal %d: %s", pid, strerror(failure));
         return;
     }
     usleep(30000);
@@ -699,11 +839,13 @@ static void send_ui_signal(UI *ui) {
     refresh_ui(ui);
 }
 
-static int process_select(ProcessList *list, const char *filter, pid_t *selected, bool *setvar) {
+static int process_select(ProcessList *list, const char *filter, pid_t *selected, bool *setvar,
+                          bool lazy) {
     UI ui;
     memset(&ui, 0, sizeof ui);
     ui.tty = -1; ui.list = *list; memset(list, 0, sizeof *list);
     ui.sort = SORT_PID; ui.descending = false;
+    ui.lazy = lazy;
     snprintf(ui.filter, sizeof ui.filter, "%s", filter ? filter : "");
     sort_list(&ui.list, ui.sort, ui.descending);
     if (!ui_begin(&ui)) { list_free(&ui.list); fprintf(stderr, "pps: interactive terminal is required\n"); return 1; }
@@ -736,6 +878,13 @@ static int process_select(ProcessList *list, const char *filter, pid_t *selected
         else if (k == 'r') refresh_ui(&ui);
         else if (k == 's') send_ui_signal(&ui);
         else if ((k == '\r' || k == '\n' || k == 'P') && ui.list.n) {
+            if (!same_process(&ui.list.v[ui.selected])) {
+                pid_t stale = ui.list.v[ui.selected].pid;
+                refresh_ui(&ui);
+                snprintf(ui.message, sizeof ui.message,
+                         "pps: process %d no longer exists or changed", stale);
+                continue;
+            }
             *selected = ui.list.v[ui.selected].pid; *setvar = k == 'P';
             ui_restore(); close(ui.tty); list_free(&ui.list); g_ui = NULL; return 0;
         }
@@ -980,11 +1129,13 @@ int main(int argc, char **argv) {
     }
     filter = target;
     ProcessList list = {0};
-    if (!scan_processes(&list, filter)) die("cannot read /proc: %s", strerror(errno));
+    bool lazy = !filter;
+    if (!(lazy ? scan_pids(&list) : scan_processes(&list, filter)))
+        die("cannot read /proc: %s", strerror(errno));
     if (target && list.n == 0) { fprintf(stderr, "pps: no process matched '%s'\n", target); list_free(&list); return 1; }
     if (target && list.n == 1) { pid_t pid = list.v[0].pid; list_free(&list); return perform(pid, action, sig); }
     pid_t chosen = 0; bool setvar = false;
-    int rc = process_select(&list, filter, &chosen, &setvar);
+    int rc = process_select(&list, filter, &chosen, &setvar, lazy);
     if (rc == 0) printf(setvar ? "PPS_SETVAR\t%d\n" : "PPS_SELECT\t%d\n", chosen);
     return rc;
 }

@@ -41,3 +41,9 @@ fi
 grep -q 'requires interactive Bash integration' /tmp/pps-test.err || fail 'launcher error missing'
 
 printf '%s\n' 'all non-interactive tests passed'
+
+if command -v python3 >/dev/null 2>&1; then
+    python3 tests/interactive.py "$core"
+else
+    printf '%s\n' 'interactive tests skipped (python3 is not installed)'
+fi

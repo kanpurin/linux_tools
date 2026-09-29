@@ -26,18 +26,19 @@
 
 #define PPS_VERSION "1.0.0"
 #define TEXT_MAX 8192
+#define USER_CACHE_SIZE 256
 
 typedef struct {
     pid_t pid, ppid, session, tpgid;
     uid_t uid;
-    char user[64], comm[256], command[4096], exe[PATH_MAX];
+    char user[64], comm[256], command[4096];
     char state;
     long tty_nr, nice, threads;
     unsigned long long utime, stime, start_ticks, vsize;
     long long rss_pages;
     double cpu, mem;
     time_t started;
-    char row[TEXT_MAX];
+    char *row;
 } Process;
 
 typedef struct {
@@ -52,6 +53,9 @@ typedef struct {
     int tty;
     struct termios saved;
     bool raw, alt;
+    bool buffering;
+    char output[32768];
+    size_t output_len;
     ProcessList list;
     size_t selected, top;
     int hscroll, rows, cols;
@@ -69,6 +73,11 @@ static unsigned long long g_memtotal_kb;
 static time_t g_boot_time;
 static UI *g_ui;
 static volatile sig_atomic_t g_resized;
+static struct {
+    uid_t uid;
+    char name[64];
+} g_user_cache[USER_CACHE_SIZE];
+static size_t g_user_cache_count, g_user_cache_next;
 
 static void die(const char *fmt, ...) {
     va_list ap;
@@ -131,12 +140,24 @@ static void load_system_info(void) {
 }
 
 static void user_name(uid_t uid, char *out, size_t cap) {
+    for (size_t i = 0; i < g_user_cache_count; i++) {
+        if (g_user_cache[i].uid == uid) {
+            snprintf(out, cap, "%s", g_user_cache[i].name);
+            return;
+        }
+    }
     struct passwd pw, *result = NULL;
     char buf[16384];
     if (getpwuid_r(uid, &pw, buf, sizeof buf, &result) == 0 && result)
         snprintf(out, cap, "%s", pw.pw_name);
     else
         snprintf(out, cap, "%u", (unsigned)uid);
+    sanitize_text(out);
+    size_t at = g_user_cache_next;
+    g_user_cache[at].uid = uid;
+    snprintf(g_user_cache[at].name, sizeof g_user_cache[at].name, "%s", out);
+    g_user_cache_next = (at + 1) % USER_CACHE_SIZE;
+    if (g_user_cache_count < USER_CACHE_SIZE) g_user_cache_count++;
 }
 
 static bool parse_stat(pid_t pid, Process *p) {
@@ -187,10 +208,14 @@ static void read_command(pid_t pid, Process *p) {
     } else {
         snprintf(p->command, sizeof p->command, "[%s]", p->comm);
     }
+}
+
+static void read_exe(pid_t pid, char *out, size_t cap) {
+    char path[64];
     snprintf(path, sizeof path, "/proc/%d/exe", pid);
-    ssize_t r = readlink(path, p->exe, sizeof p->exe - 1);
-    if (r >= 0) { p->exe[r] = '\0'; sanitize_text(p->exe); }
-    else p->exe[0] = '\0';
+    ssize_t r = readlink(path, out, cap - 1);
+    if (r >= 0) { out[r] = '\0'; sanitize_text(out); }
+    else out[0] = '\0';
 }
 
 static void format_start(time_t t, char out[16]) {
@@ -228,6 +253,7 @@ static void tty_label(long tty_nr, char out[24]) {
 
 static void format_row(Process *p) {
     char tty[24], stat[16], start[16], cputime[32];
+    char row[TEXT_MAX];
     tty_label(p->tty_nr, tty);
     stat_label(p, stat);
     format_start(p->started, start);
@@ -236,14 +262,16 @@ static void format_row(Process *p) {
         snprintf(cputime, sizeof cputime, "%llu:%02llu:%02llu", sec / 3600, (sec / 60) % 60, sec % 60);
     else
         snprintf(cputime, sizeof cputime, "%llu:%02llu", sec / 60, sec % 60);
-    snprintf(p->row, sizeof p->row,
+    snprintf(row, sizeof row,
              "%-10.10s %7d %5.1f %5.1f %8llu %7lld %-8.8s %-5.5s %-6.6s %8s %s",
              p->user, p->pid, p->cpu, p->mem, p->vsize / 1024,
              p->rss_pages * (long long)g_pagesize / 1024, tty, stat, start, cputime,
              p->command);
+    p->row = strdup(row);
+    if (!p->row) die("out of memory");
 }
 
-static bool load_process(pid_t pid, Process *p) {
+static bool load_process_basic(pid_t pid, Process *p) {
     memset(p, 0, sizeof *p);
     p->pid = pid;
     char path[64];
@@ -251,21 +279,24 @@ static bool load_process(pid_t pid, Process *p) {
     struct stat st;
     if (stat(path, &st) != 0) return false;
     p->uid = st.st_uid;
-    user_name(p->uid, p->user, sizeof p->user);
-    sanitize_text(p->user);
     if (!parse_stat(pid, p)) return false;
     read_command(pid, p);
+    return true;
+}
+
+static void complete_process(Process *p, bool make_row) {
+    user_name(p->uid, p->user, sizeof p->user);
     double age = g_uptime - (double)p->start_ticks / g_hz;
     double cpu_seconds = (double)(p->utime + p->stime) / g_hz;
     p->cpu = age > 0.01 ? 100.0 * cpu_seconds / age : 0.0;
     unsigned long long rss_kb = (unsigned long long)(p->rss_pages > 0 ? p->rss_pages : 0) * g_pagesize / 1024;
     p->mem = g_memtotal_kb ? 100.0 * rss_kb / g_memtotal_kb : 0.0;
     p->started = g_boot_time + (time_t)(p->start_ticks / (unsigned long long)g_hz);
-    format_row(p);
-    return true;
+    if (make_row) format_row(p);
 }
 
 static void list_free(ProcessList *l) {
+    for (size_t i = 0; i < l->n; i++) free(l->v[i].row);
     free(l->v);
     memset(l, 0, sizeof *l);
 }
@@ -279,22 +310,32 @@ static void list_add(ProcessList *l, const Process *p) {
 }
 
 static bool matches(const Process *p, const char *needle) {
-    return !needle || !*needle || strstr(p->comm, needle) || strstr(p->command, needle) || strstr(p->exe, needle);
+    return !needle || !*needle || strstr(p->comm, needle) || strstr(p->command, needle);
 }
 
 static bool scan_processes(ProcessList *out, const char *filter) {
     DIR *d = opendir("/proc");
     if (!d) return false;
     load_system_info();
+    pid_t self = getpid();
     struct dirent *de;
     while ((de = readdir(d))) {
         if (!numeric(de->d_name)) continue;
         char *end;
         long n = strtol(de->d_name, &end, 10);
         if (*end || n <= 0 || n > INT_MAX) continue;
-        if ((pid_t)n == getpid()) continue;
+        if ((pid_t)n == self) continue;
         Process p;
-        if (load_process((pid_t)n, &p) && matches(&p, filter)) list_add(out, &p);
+        if (!load_process_basic((pid_t)n, &p)) continue;
+        bool hit = matches(&p, filter);
+        if (!hit) {
+            char exe[PATH_MAX];
+            read_exe((pid_t)n, exe, sizeof exe);
+            hit = strstr(exe, filter) != NULL;
+        }
+        if (!hit) continue;
+        complete_process(&p, true);
+        list_add(out, &p);
     }
     closedir(d);
     return true;
@@ -341,12 +382,37 @@ static void fd_write_all(int fd, const char *s, size_t n) {
     }
 }
 
+static void ui_flush(UI *ui) {
+    if (ui->output_len) {
+        fd_write_all(ui->tty, ui->output, ui->output_len);
+        ui->output_len = 0;
+    }
+}
+
+static void ui_write(UI *ui, const char *s, size_t n) {
+    if (!ui->buffering) {
+        fd_write_all(ui->tty, s, n);
+        return;
+    }
+    while (n) {
+        if (ui->output_len == sizeof ui->output) ui_flush(ui);
+        size_t space = sizeof ui->output - ui->output_len;
+        size_t chunk = n < space ? n : space;
+        memcpy(ui->output + ui->output_len, s, chunk);
+        ui->output_len += chunk;
+        s += chunk;
+        n -= chunk;
+    }
+}
+
 static void tty_write(UI *ui, const char *s) {
-    fd_write_all(ui->tty, s, strlen(s));
+    ui_write(ui, s, strlen(s));
 }
 
 static void ui_restore(void) {
     if (!g_ui) return;
+    g_ui->buffering = false;
+    g_ui->output_len = 0;
     if (g_ui->raw) {
         tcsetattr(g_ui->tty, TCSAFLUSH, &g_ui->saved);
         g_ui->raw = false;
@@ -409,9 +475,15 @@ static void slice_line(UI *ui, const char *line, bool reverse) {
     if (reverse) tty_write(ui, "\033[7m");
     size_t n = len - off;
     if (n > (size_t)ui->cols) n = (size_t)ui->cols;
-    fd_write_all(ui->tty, line + off, n);
+    ui_write(ui, line + off, n);
     if (reverse) {
-        for (size_t i = n; i < (size_t)ui->cols; i++) fd_write_all(ui->tty, " ", 1);
+        static const char spaces[128] = "                                                                                                                               ";
+        size_t padding = (size_t)ui->cols - n;
+        while (padding) {
+            size_t chunk = padding < sizeof spaces - 1 ? padding : sizeof spaces - 1;
+            ui_write(ui, spaces, chunk);
+            padding -= chunk;
+        }
         tty_write(ui, "\033[0m");
     }
 }
@@ -431,7 +503,7 @@ static void ui_draw_status(UI *ui) {
     tty_write(ui, "\033[999;1H\033[K");
     size_t n = strlen(status);
     if (n > (size_t)ui->cols) n = (size_t)ui->cols;
-    fd_write_all(ui->tty, status, n);
+    ui_write(ui, status, n);
 }
 
 static void ui_draw_process_row(UI *ui, size_t index) {
@@ -447,6 +519,7 @@ static void ui_draw_process_row(UI *ui, size_t index) {
 static void ui_draw(UI *ui) {
     ui_size(ui);
     keep_visible(ui);
+    ui->buffering = true;
     /* The alternate screen is cleared once in ui_begin().  Clearing it again
        for every key press produces a very visible flash, especially over
        SSH.  Repaint in place and erase each line's unused tail instead. */
@@ -462,6 +535,8 @@ static void ui_draw(UI *ui) {
         if (r + 1 < page) tty_write(ui, "\r\n");
     }
     ui_draw_status(ui);
+    ui_flush(ui);
+    ui->buffering = false;
 }
 
 static int read_key(UI *ui) {
@@ -667,9 +742,12 @@ static int process_select(ProcessList *list, const char *filter, pid_t *selected
         if (one_line_move && ui.selected != old_selected) {
             keep_visible(&ui);
             if (ui.top == old_top) {
+                ui.buffering = true;
                 ui_draw_process_row(&ui, old_selected);
                 ui_draw_process_row(&ui, ui.selected);
                 ui_draw_status(&ui);
+                ui_flush(&ui);
+                ui.buffering = false;
                 need_draw = false;
             }
         }
@@ -710,7 +788,10 @@ static unsigned long long open_file_limit(pid_t pid) {
 static int show_info(pid_t pid) {
     load_system_info();
     Process p;
-    if (!load_process(pid, &p)) { fprintf(stderr, "pps: process %d no longer exists\n", pid); return 1; }
+    if (!load_process_basic(pid, &p)) { fprintf(stderr, "pps: process %d no longer exists\n", pid); return 1; }
+    char exe[PATH_MAX];
+    read_exe(pid, exe, sizeof exe);
+    complete_process(&p, false);
     char path[64], cwd[PATH_MAX] = "<permission denied>", start[64], up[64], rss[64], vsz[64];
     snprintf(path, sizeof path, "/proc/%d/cwd", pid);
     ssize_t n = readlink(path, cwd, sizeof cwd - 1);
@@ -723,7 +804,7 @@ static int show_info(pid_t pid) {
     int fds; snprintf(path, sizeof path, "/proc/%d/fd", pid); fds = count_dir_entries(path);
     unsigned long long fdlim = open_file_limit(pid);
     printf("PID        %d\nPPID       %d\nUser       %s\nCommand    %s\nExe        %s\nCwd        %s\nState      %s\nStarted    %s\nUptime     %s\n\n",
-           p.pid, p.ppid, p.user, p.command, *p.exe ? p.exe : "<permission denied>", cwd, state_name(p.state), start, up);
+           p.pid, p.ppid, p.user, p.command, *exe ? exe : "<permission denied>", cwd, state_name(p.state), start, up);
     printf("CPU        %.1f%%\nMemory     %.1f%%\nRSS        %s\nVSZ        %s\n\n", p.cpu, p.mem, rss, vsz);
     printf("Threads    %ld\nFDs        ", p.threads);
     if (fds < 0) printf("<permission denied>"); else printf("%d", fds);
@@ -731,7 +812,7 @@ static int show_info(pid_t pid) {
     putchar('\n');
     if (p.ppid > 0) {
         Process parent; printf("\nParent\n");
-        if (load_process(p.ppid, &parent)) printf("  %s [%d]\n", parent.comm, parent.pid); else printf("  <unavailable>\n");
+        if (load_process_basic(p.ppid, &parent)) printf("  %s [%d]\n", parent.comm, parent.pid); else printf("  <unavailable>\n");
     }
     ProcessList all = {0};
     if (scan_processes(&all, NULL)) {

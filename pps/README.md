@@ -17,10 +17,20 @@ That one command:
 
 1. builds the C core;
 2. installs the runtime under `~/.local/lib/pps`;
-3. installs the fallback launcher as `~/.local/bin/pps`; and
-4. adds the Bash integration to `~/.bashrc` exactly once.
+3. installs the fallback launcher as `~/.local/bin/pps`.
 
-Open a new Bash session and run `pps`. A child process cannot change the already-running parent shell, so after the first installation only, either open a new terminal or reload it with `source ~/.bashrc`.
+`make` never modifies shell startup files. To add the Bash integration to `~/.bashrc`, explicitly run:
+
+```bash
+make install-shell
+source ~/.bashrc
+```
+
+`make install-shell` is idempotent and adds the integration line only once. Alternatively, manage the following line yourself:
+
+```bash
+source "$HOME/.local/lib/pps/shell/pps.bash"
+```
 
 The locations can be overridden when needed:
 
@@ -29,6 +39,12 @@ make PREFIX=/opt/pps-prefix BASHRC=/path/to/bashrc
 ```
 
 Use `make build` when only a local build is wanted and no files outside the source tree should be changed.
+
+To remove the installed runtime and launcher without touching `.bashrc`:
+
+```bash
+make uninstall
+```
 
 `pps` intentionally requires the Bash integration. Running `bin/pps` directly explains that the integration is missing. Other shells are unsupported.
 

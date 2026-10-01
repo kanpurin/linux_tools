@@ -2,7 +2,9 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <langinfo.h>
+#include <limits.h>
 #include <locale.h>
 #include <ncurses.h>
 #include <signal.h>
@@ -356,17 +358,32 @@ static void draw_breaks(Gdb *g, int selected, const char *project_root) {
     refresh();
 }
 static bool prompt_text(const char*label,char*out,size_t size){int rows,cols;getmaxyx(stdscr,rows,cols);timeout(-1);echo();curs_set(1);move(rows-1,0);clrtoeol();clipped(rows-1,0,cols-1,"%s",label);int x=display_width(label);move(rows-1,x);int rc=getnstr(out,(int)size-1);noecho();curs_set(0);timeout(80);return rc!=ERR&&out[0];}
-static bool confirm_quit(void){char a[8]="";return prompt_text(tui_text("Debuggee is active. Quit? [y/N] ","デバッグ対象が動作中です。終了しますか？ [y/N] "),a,sizeof(a))&&(a[0]=='y'||a[0]=='Y');}
+static bool confirm_quit(const Gdb*g){char a[8]="";return prompt_text(g->attached_pid?tui_text("Detach and leave the process running? [y/N] ","接続を解除してプロセスを続行しますか？ [y/N] "):tui_text("Debuggee is active. Quit? [y/N] ","デバッグ対象が動作中です。終了しますか？ [y/N] "),a,sizeof(a))&&(a[0]=='y'||a[0]=='Y');}
 int main(int argc,char**argv){
     setlocale(LC_ALL,"");
-    Language language=LANGUAGE_AUTO;int first=1;
-    while(first<argc){if(!strcmp(argv[first],"--lang")){if(first+1>=argc||!parse_language(argv[first+1],&language)){fprintf(stderr,"gd: --lang must be auto, ja, or en\n");return 2;}first+=2;}else if(!strcmp(argv[first],"--args"))first++;else if(!strcmp(argv[first],"--help")||!strcmp(argv[first],"-h")){printf("Usage: gd [--lang auto|ja|en] [--args] PROGRAM [ARG...]\n");return 0;}else break;}
+    Language language=LANGUAGE_AUTO;int first=1;pid_t attach_pid=0;
+    while(first<argc){
+        if(!strcmp(argv[first],"--lang")){
+            if(first+1>=argc||!parse_language(argv[first+1],&language)){fprintf(stderr,"gd: --lang must be auto, ja, or en\n");return 2;}
+            first+=2;
+        }else if(!strcmp(argv[first],"-p")||!strcmp(argv[first],"--pid")){
+            if(attach_pid||first+1>=argc){fprintf(stderr,"gd: specify one positive PID with -p/--pid\n");return 2;}
+            const char*text=argv[first+1];char*end;errno=0;long value=strtol(text,&end,10);
+            if(errno||!text[0]||strspn(text,"0123456789")!=strlen(text)||*end||value<=0||value>INT_MAX){fprintf(stderr,"gd: PID must be a positive integer\n");return 2;}
+            attach_pid=(pid_t)value;first+=2;
+        }else if(!strcmp(argv[first],"--args")||!strcmp(argv[first],"--")){first++;break;}
+        else if(!strcmp(argv[first],"--help")||!strcmp(argv[first],"-h")){printf("Usage: gd [--lang auto|ja|en] [--args] PROGRAM [ARG...]\n       gd [--lang auto|ja|en] -p PID\n");return 0;}
+        else break;
+    }
     ui_japanese=language_is_japanese(language);
     if(language==LANGUAGE_JA&&!locale_is_utf8())fprintf(stderr,"gd: Japanese UI requires a UTF-8 locale; using English\n");
-    if(first>=argc){fprintf(stderr,"gd: missing program\n");return 2;}
+    if(attach_pid&&first<argc){fprintf(stderr,"gd: -p/--pid cannot be combined with PROGRAM or arguments\n");return 2;}
+    if(!attach_pid&&first>=argc){fprintf(stderr,"gd: missing program or PID\n");return 2;}
     Gdb g;
-    if(gdb_start(&g,argv[first],argc>first+1?&argv[first+1]:NULL)){fprintf(stderr,"gd: failed to start GDB: %s\n",g.message);return 1;}
+    int start_result=attach_pid?gdb_attach(&g,attach_pid):gdb_start(&g,argv[first],argc>first+1?&argv[first+1]:NULL);
+    if(start_result){fprintf(stderr,"gd: failed to %s: %s\n",attach_pid?"attach":"start GDB",g.message);gdb_shutdown(&g);return 1;}
     g.japanese=ui_japanese;
+    if(attach_pid)snprintf(g.message,sizeof(g.message),tui_text("Attached to PID %ld - press c to continue","PID %ldに接続しました。cで続行"),(long)attach_pid);
     if(ui_japanese&&!strcmp(g.message,"Ready - press r to run"))snprintf(g.message,sizeof(g.message),"準備完了 - rで実行");
     initscr();
     if(has_colors()){start_color();use_default_colors();init_pair(COLOR_BREAK,COLOR_CYAN,-1);init_pair(COLOR_COND,COLOR_YELLOW,-1);init_pair(COLOR_WATCH,COLOR_GREEN,-1);init_pair(COLOR_ERROR,COLOR_RED,-1);init_pair(COLOR_INFO,COLOR_CYAN,-1);init_pair(COLOR_MUTED,COLOR_WHITE,-1);}
@@ -552,7 +569,7 @@ int main(int argc,char**argv){
             else if(ch=='E'&&var_count){if(!stopped)snprintf(g.message,sizeof(g.message),"%s",tui_text("Stop the program before modifying a value","値を変更する前にプログラムを停止してください"));else if(var_rows[var_selected].header)snprintf(g.message,sizeof(g.message),"%s",tui_text("Select a variable to modify","変更する変数を選択してください"));else if(strstr(var_rows[var_selected].value,"<optimized out>"))snprintf(g.message,sizeof(g.message),"%s",tui_text("Cannot modify variable: value is optimized out.","変数を変更できません: 最適化により値が削除されています。"));else{memset(&edit_dialog,0,sizeof(edit_dialog));edit_dialog.kind=EDIT_VARIABLE;snprintf(edit_dialog.expression,sizeof(edit_dialog.expression),"%s",var_rows[var_selected].expression);snprintf(edit_dialog.label,sizeof(edit_dialog.label),"%s",var_rows[var_selected].expression);snprintf(edit_dialog.type,sizeof(edit_dialog.type),"%s",var_rows[var_selected].type);snprintf(edit_dialog.current,sizeof(edit_dialog.current),"%s",var_rows[var_selected].value);view=VIEW_EDIT_VALUE;}}
             else if(ch=='w'&&var_count){if(stopped)gdb_watch(&g,var_rows[var_selected].expression);else snprintf(g.message,sizeof(g.message),"%s",tui_text("Stop the program before setting a watchpoint","Watchpointを設定する前にプログラムを停止してください"));}
             else if(ch=='B'&&var_count){if(!src.path[0])snprintf(g.message,sizeof(g.message),"%s",tui_text("No source location for conditional breakpoint","条件付きBreakpointを設定するソース位置がありません"));else if(!src.debug_lines)snprintf(g.message,sizeof(g.message),"%s",tui_text("Source line breakpoint unavailable: no debug line information.","ソース行Breakpointを設定できません: デバッグ行情報がありません。"));else{input[0]='\0';char label[700];snprintf(label,sizeof(label),tui_text("Condition for %s (e.g. == 5): ","%sの条件（例: == 5）: "),var_rows[var_selected].expression);if(prompt_text(label,input,sizeof(input))){char condition[1536];if(strchr("=!<>&|",input[0]))snprintf(condition,sizeof(condition),"(%.*s) %.*s",500,var_rows[var_selected].expression,900,input);else snprintf(condition,sizeof(condition),"%s",input);int oldmax=newest_break_number(&g),requested=cursor+1;if(!gdb_set_cond_breakpoint(&g,src.path,requested,condition)){int actual=new_break_line(&g,src.path,oldmax);if(actual>0)cursor=actual-1;}}}}
-            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit())done=true;}else done=true;}
+            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit(&g))done=true;}else done=true;}
             else snprintf(g.message,sizeof(g.message),"%s",tui_text("Variables: Enter expand, p value, a address, w watch, B conditional breakpoint","変数: Enter 展開、p 値、a アドレス、w 監視、B 条件付きBreakpoint"));
             continue;
         }
@@ -562,7 +579,7 @@ int main(int argc,char**argv){
             else if(ch=='p'&&g.register_count){build_register_panel(&g.registers[reg_selected],&register_panel);view=VIEW_REGISTER;snprintf(g.message,sizeof(g.message),tui_text("Register details: %s","レジスタ詳細: %s"),g.registers[reg_selected].name);}
             else if(ch=='E'&&g.register_count){if(!stopped)snprintf(g.message,sizeof(g.message),"%s",tui_text("Stop the program before modifying a register","レジスタを変更する前にプログラムを停止してください"));else{memset(&edit_dialog,0,sizeof(edit_dialog));edit_dialog.kind=EDIT_REGISTER;snprintf(edit_dialog.label,sizeof(edit_dialog.label),"%s",g.registers[reg_selected].name);snprintf(edit_dialog.expression,sizeof(edit_dialog.expression),"$%s",g.registers[reg_selected].name);snprintf(edit_dialog.current,sizeof(edit_dialog.current),"%s",g.registers[reg_selected].value);view=VIEW_EDIT_VALUE;}}
             else if(ch=='a')snprintf(g.message,sizeof(g.message),"%s",tui_text("Register memory view is planned after the Assembly MVP","レジスタのメモリ表示は今後対応予定です"));
-            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit())done=true;}else done=true;}
+            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit(&g))done=true;}else done=true;}
             else snprintf(g.message,sizeof(g.message),"%s",tui_text("Registers: j/k select, p details, Tab pane","レジスタ: j/k 選択、p 詳細、Tab ペイン切替"));
             continue;
         }
@@ -570,7 +587,7 @@ int main(int argc,char**argv){
             if((ch=='j'||ch==KEY_DOWN)&&stack_selected+1<g.frame_count)stack_selected++;
             else if((ch=='k'||ch==KEY_UP)&&stack_selected>0)stack_selected--;
             else if((ch=='\n'||ch==KEY_ENTER)&&g.frame_count){GdbFrame frame=g.frames[stack_selected];if(!stopped)snprintf(g.message,sizeof(g.message),"%s",tui_text("Stop the program before selecting a stack frame","スタックフレームを選択する前にプログラムを停止してください"));else if(!gdb_select_frame(&g,frame.level)){expansion_count=0;var_selected=0;var_top=0;asm_selected=g.current_instruction>=0?g.current_instruction:0;focus=PANE_SOURCE;if(g.source_available){if(source_navigate(&src,&history,g.fullname,g.line,&cursor,&source_col,&top,&hscroll,true,true)){code_view=CODE_SOURCE;snprintf(g.message,sizeof(g.message),tui_text("Frame #%d: %s:%d [%s]","フレーム #%d: %s:%d [%s]"),frame.level,path_name(g.fullname),g.line,project_path(g.fullname,project_root)?tui_text("project","プロジェクト"):tui_text("external","外部"));}else snprintf(g.message,sizeof(g.message),tui_text("ERROR: source unavailable: %.900s","エラー: ソースを表示できません: %.900s"),g.fullname);}else{code_view=CODE_ASSEMBLY;history_push_assembly(&history,g.pc,g.function,asm_selected,asm_top);snprintf(g.message,sizeof(g.message),tui_text("Frame #%d: %s @ %s","フレーム #%d: %s @ %s"),frame.level,g.function[0]?g.function:tui_text("<unknown>","<不明>"),g.pc[0]?g.pc:tui_text("<address unavailable>","<アドレス取得不可>"));}}}
-            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit())done=true;}else done=true;}
+            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit(&g))done=true;}else done=true;}
             else snprintf(g.message,sizeof(g.message),"%s",tui_text("Stack: j/k select, Enter selects frame and opens its source","スタック: j/k 選択、Enterでフレーム選択とソース移動"));
             continue;
         }
@@ -588,7 +605,7 @@ int main(int argc,char**argv){
             else if(ch=='S'){gdb_refresh_breakpoints(&g);view=VIEW_BREAKS;}
             else if(ch=='O')view=VIEW_OUTPUT;
             else if(ch=='h')view=VIEW_HELP;
-            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit())done=true;}else done=true;}
+            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit(&g))done=true;}else done=true;}
             else snprintf(g.message,sizeof(g.message),"%s",tui_text("ASM: j/k browse, i/I step, b address breakpoint, B function breakpoint","ASM: j/k 移動、i/I 命令実行、b アドレスBreakpoint、F 関数Breakpoint"));
             continue;
         }
@@ -628,7 +645,7 @@ int main(int argc,char**argv){
             else if(ch=='/'||ch=='?'){input[0]=0;if(prompt_text(ch=='/'?tui_text("Search forward: ","前方検索: "):tui_text("Search backward: ","後方検索: "),input,sizeof(input))){snprintf(last_search,sizeof(last_search),"%s",input);search_direction=ch=='/'?1:-1;search_whole_word=false;int found_line=cursor,found_col=source_col;if(text_search_position(&src,&found_line,&found_col,last_search,search_direction,search_whole_word)){cursor=found_line;source_col=found_col;snprintf(g.message,sizeof(g.message),tui_text("Search '%.*s': line %d","検索 '%.*s': %d行目"),700,last_search,cursor+1);}else snprintf(g.message,sizeof(g.message),tui_text("Search text not found: %.*s","検索文字列が見つかりません: %.*s"),700,last_search);}}
             else if(ch=='n'||ch=='N'){if(last_search[0]){int direction=ch=='n'?search_direction:-search_direction,found_line=cursor,found_col=source_col;if(text_search_position(&src,&found_line,&found_col,last_search,direction,search_whole_word)){cursor=found_line;source_col=found_col;snprintf(g.message,sizeof(g.message),tui_text("Search '%.*s': line %d","検索 '%.*s': %d行目"),700,last_search,cursor+1);}else snprintf(g.message,sizeof(g.message),tui_text("Search text not found: %.*s","検索文字列が見つかりません: %.*s"),700,last_search);}else snprintf(g.message,sizeof(g.message),"%s",tui_text("No previous search","直前の検索がありません"));}
             else if(ch=='*'||ch=='#'){char word[256];if(word_under_cursor(&src,cursor,source_col,word,sizeof(word),NULL)){snprintf(last_search,sizeof(last_search),"%s",word);search_direction=ch=='*'?1:-1;search_whole_word=true;if(search_word(&src,&cursor,&source_col,last_search,search_direction))snprintf(g.message,sizeof(g.message),tui_text("Search word '%s': line %d","単語検索 '%s': %d行目"),last_search,cursor+1);else snprintf(g.message,sizeof(g.message),tui_text("Word not found: %s","単語が見つかりません: %s"),last_search);}}
-            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit())done=true;}else done=true;}
+            else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit(&g))done=true;}else done=true;}
             else snprintf(g.message,sizeof(g.message),"%s",tui_text("VIM mode: Tab switches to GDB controls","VIMモード: TabでGDB操作へ切り替え"));
             continue;
         }
@@ -676,7 +693,7 @@ int main(int argc,char**argv){
         else if(ch=='O')view=VIEW_OUTPUT;
         else if(ch=='h')view=VIEW_HELP;
         else if(ch==18&&src.path[0]){src.mtime=0;source_load(&src,src.path);snprintf(g.message,sizeof(g.message),"%s",tui_text("Source reloaded","ソースを再読込みしました"));}
-        else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit())done=true;}else done=true;}
+        else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit(&g))done=true;}else done=true;}
     }
     endwin();source_free(&src);gdb_shutdown(&g);return 0;
 }

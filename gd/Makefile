@@ -23,6 +23,10 @@ install: $(TARGET)
 	install -m 0755 $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
 
 check: $(TARGET)
+	$(CC) $(CFLAGS) -g -O0 -o tests/attach_fixture tests/attach_fixture.c
+	$(CC) $(CFLAGS) -O0 -o tests/attach_nodebug_fixture tests/attach_fixture.c
+	$(CC) $(CFLAGS) -o tests/attach_smoke tests/attach_smoke.c src/gdb.c
+	tests/attach_smoke tests/attach_fixture tests/attach_nodebug_fixture
 	$(CC) $(CFLAGS) -g -O0 -o tests/fixture tests/fixture.c
 	$(CC) $(CFLAGS) -g -O0 -o tests/pane_fixture tests/pane_fixture.c
 	$(CC) $(CFLAGS) -g -O0 -o tests/word_fixture tests/word_fixture.c
@@ -55,4 +59,5 @@ check: $(TARGET)
 	tests/catch_smoke tests/catch_fixture
 
 clean:
+	rm -f tests/attach_fixture tests/attach_nodebug_fixture tests/attach_smoke
 	rm -f $(TARGET) tests/fixture tests/pane_fixture tests/word_fixture tests/multi_fixture tests/address_fixture tests/frame_vars_fixture tests/mutation_fixture tests/catch_fixture tests/nodebug_fixture tests/mixed_debug_fixture tests/mixed_debug_main.o tests/mixed_nodebug.o tests/api_smoke tests/children_smoke tests/multifile_smoke tests/address_smoke tests/frame_vars_smoke tests/assembly_smoke tests/mixed_mode_smoke tests/mutation_smoke tests/catch_smoke

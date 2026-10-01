@@ -99,6 +99,7 @@ typedef struct {
 
 typedef struct {
     pid_t pid;
+    pid_t attached_pid;
     int to_gdb;
     int from_gdb;
     int token;
@@ -146,6 +147,7 @@ typedef struct {
 } Gdb;
 
 int gdb_start(Gdb *g, const char *program, char *const program_argv[]);
+int gdb_attach(Gdb *g, pid_t pid);
 void gdb_shutdown(Gdb *g);
 int gdb_poll(Gdb *g, int timeout_ms);
 int gdb_run(Gdb *g);

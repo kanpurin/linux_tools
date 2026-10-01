@@ -232,7 +232,7 @@ static int request(Gdb *g, char *result, size_t size, const char *fmt, ...) {
     return token < 0 ? -1 : wait_result(g, token, result, size);
 }
 
-int gdb_start(Gdb *g, const char *program, char *const program_argv[]) {
+static int start_session(Gdb *g, const char *program, char *const program_argv[], pid_t attach_pid) {
     memset(g, 0, sizeof(*g)); g->to_gdb = g->from_gdb = -1; g->state = GDB_NOT_STARTED;
     copy_text(g->executable, sizeof(g->executable), program);
     int in[2], out[2];
@@ -253,6 +253,22 @@ int gdb_start(Gdb *g, const char *program, char *const program_argv[]) {
        has no line information.  The UI then selects Source or Assembly from
        the stopped frame's fullname + line instead of silently stepping over it. */
     request(g, result, sizeof(result), "-gdb-set step-mode on");
+    if (attach_pid > 0) {
+        /* Accept interrupt/detach commands while the inferior is running. */
+        if (request(g, result, sizeof(result), "-gdb-set mi-async on")) return -1;
+        if (request(g, result, sizeof(result), "-target-attach %ld", (long)attach_pid)) return -1;
+        g->attached_pid = attach_pid;
+        /* MI may deliver *stopped after ^done. Consume it before drawing. */
+        for (int i = 0; i < 100 && g->state != GDB_STOPPED; ++i)
+            if (gdb_poll(g, 50) < 0) return -1;
+        if (g->state != GDB_STOPPED) {
+            copy_text(g->message, sizeof(g->message), "ERROR: attach did not stop the process");
+            return -1;
+        }
+        if (gdb_refresh(g)) return -1;
+        snprintf(g->message, sizeof(g->message), "Attached to PID %ld - press c to continue", (long)attach_pid);
+        return 0;
+    }
     if (program_argv && program_argv[0]) {
         char command[8192] = "-exec-arguments";
         for (int i = 0; program_argv[i]; ++i) {
@@ -285,11 +301,44 @@ int gdb_start(Gdb *g, const char *program, char *const program_argv[]) {
     return 0;
 }
 
+int gdb_start(Gdb *g, const char *program, char *const program_argv[]) {
+    return start_session(g, program, program_argv, 0);
+}
+
+int gdb_attach(Gdb *g, pid_t pid) {
+    char path[64], program[GD_PATH_MAX];
+    memset(g, 0, sizeof(*g));
+    g->to_gdb = g->from_gdb = -1;
+    if (pid <= 0) {
+        copy_text(g->message, sizeof(g->message), "ERROR: PID must be positive");
+        return -1;
+    }
+    snprintf(path, sizeof(path), "/proc/%ld/exe", (long)pid);
+    ssize_t n = readlink(path, program, sizeof(program) - 1);
+    if (n < 0) {
+        snprintf(g->message, sizeof(g->message), "ERROR: cannot access PID %ld: %s", (long)pid, strerror(errno));
+        return -1;
+    }
+    program[n] = '\0';
+    return start_session(g, program, NULL, pid);
+}
+
 void gdb_shutdown(Gdb *g) {
+    if (g->attached_pid && g->to_gdb >= 0 && g->state != GDB_EXITED) {
+        char result[4096];
+        if (g->state == GDB_RUNNING) {
+            request(g, result, sizeof(result), "-exec-interrupt --all");
+            for (int i = 0; i < 100 && g->state == GDB_RUNNING; ++i)
+                if (gdb_poll(g, 50) < 0) break;
+        }
+        request(g, result, sizeof(result), "-target-detach");
+    }
     if (g->to_gdb >= 0) { char r[1024]; request(g, r, sizeof(r), "-gdb-exit"); close(g->to_gdb); }
     if (g->from_gdb >= 0) close(g->from_gdb);
     if (g->pid > 0) { int status; if (waitpid(g->pid, &status, WNOHANG) == 0) { kill(g->pid, SIGTERM); waitpid(g->pid, &status, 0); } }
     g->pid = 0;
+    g->attached_pid = 0;
+    g->to_gdb = g->from_gdb = -1;
 }
 
 static bool process_async_buffer(Gdb *g) {
@@ -337,6 +386,12 @@ static int exec_simple(Gdb *g, const char *cmd) {
     g->state = GDB_RUNNING; g->changed = true; return 0;
 }
 int gdb_run(Gdb *g) {
+    if (g->attached_pid) {
+        copy_text(g->message, sizeof(g->message), gtext(g,
+                  "Attached process: press c to continue; run is disabled",
+                  "接続中のプロセスはcで続行してください。runは使用できません"));
+        return -1;
+    }
     if (g->state == GDB_RUNNING) {
         copy_text(g->message, sizeof(g->message), gtext(g, "Program is already running", "プログラムはすでに実行中です"));
         return -1;

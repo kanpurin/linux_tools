@@ -439,7 +439,7 @@ int gdb_select_frame(Gdb *g, int level) {
 }
 
 static int break_at(Gdb *g, const char *file, int line, const char *condition) {
-    char loc[GD_PATH_MAX + 64], qloc[GD_PATH_MAX * 2], qcond[1200], result[16384];
+    char loc[GD_PATH_MAX + 64], qloc[GD_PATH_MAX * 2], qcond[GD_TEXT_MAX * 2 + 3], result[16384];
     snprintf(loc, sizeof(loc), "%s:%d", file, line); quote_mi(loc, qloc, sizeof(qloc));
     int rc = condition ? (quote_mi(condition, qcond, sizeof(qcond)), request(g, result, sizeof(result), "-break-insert -c %s %s", qcond, qloc))
                        : request(g, result, sizeof(result), "-break-insert %s", qloc);

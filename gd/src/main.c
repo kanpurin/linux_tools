@@ -357,6 +357,141 @@ static void draw_breaks(Gdb *g, int selected, const char *project_root) {
     attroff(COLOR_PAIR(COLOR_MUTED));
     refresh();
 }
+#define CONDITION_CANDIDATES 128
+typedef struct {
+    char expression[512], type[256], value[GD_TEXT_MAX];
+    const char *group;
+} ConditionCandidate;
+
+/* The last expression token is replaced by Tab; the rest of the condition stays. */
+static size_t condition_token(const char *input) {
+    size_t start=strlen(input);
+    while(start){
+        unsigned char c=(unsigned char)input[start-1];
+        if(isalnum(c)||c=='_'||c=='.'||c=='['||c==']'||c=='('||c==')')start--;
+        else if(c=='>'&&start>=2&&input[start-2]=='-')start-=2;
+        else break;
+    }
+    return start;
+}
+
+static void condition_add(ConditionCandidate *items,int *count,const char *expression,
+                          const char *type,const char *value,const char *group){
+    if(*count>=CONDITION_CANDIDATES)return;
+    for(int i=0;i<*count;i++)if(!strcmp(items[i].expression,expression))return;
+    ConditionCandidate *c=&items[(*count)++];
+    snprintf(c->expression,sizeof(c->expression),"%s",expression);
+    snprintf(c->type,sizeof(c->type),"%s",type);
+    snprintf(c->value,sizeof(c->value),"%s",value);
+    c->group=group;
+}
+
+static void condition_dialog(Gdb *g,Source *source,int *cursor,const char *initial,
+                             VarRow *visible,int visible_count){
+    static ConditionCandidate base[CONDITION_CANDIDATES],members[CONDITION_CANDIDATES];
+    static GdbChild children[GD_MAX_CHILDREN];
+    int base_count=0,member_count=0,selected=0,top=0;
+    char input[1024]="",cached_parent[512]="",status[GD_TEXT_MAX]="";
+    bool cached_pointer=false;
+    snprintf(input,sizeof(input),"%s",initial?initial:"");
+    int requested=*cursor+1;
+    if(g->state==GDB_RUNNING){snprintf(g->message,sizeof(g->message),"%s",tui_text("Stop the program before editing conditions","条件を編集する前にプログラムを停止してください"));return;}
+    for(int i=0;i<g->arg_count;i++)condition_add(base,&base_count,g->args[i].name,g->args[i].type,g->args[i].value,tui_text("Arg","引数"));
+    for(int i=0;i<g->local_count;i++)condition_add(base,&base_count,g->locals[i].name,g->locals[i].type,g->locals[i].value,tui_text("Local","ローカル"));
+    for(int i=0;i<visible_count;i++)if(!visible[i].header&&visible[i].depth)
+        condition_add(base,&base_count,visible[i].expression,visible[i].type,visible[i].value,tui_text("Member","メンバ"));
+    if(g->state==GDB_STOPPED)for(int i=0;i<base_count;i++){
+        char value[GD_TEXT_MAX];
+        if(!gdb_print(g,base[i].expression,value,sizeof(value)))
+            snprintf(base[i].value,sizeof(base[i].value),"%s",value);
+    }
+    for(;;){
+        size_t token_start=condition_token(input);
+        const char *token=input+token_start;
+        char parent[512]="";const char *filter=token;bool pointer=false;
+        const char *split=NULL;
+        for(const char *p=token;*p;p++){
+            if(*p=='.'){split=p;pointer=false;}
+            else if(*p=='-'&&p[1]=='>'){split=p;pointer=true;p++;}
+        }
+        if(split){size_t n=(size_t)(split-token);if(n>=sizeof(parent))n=sizeof(parent)-1;memcpy(parent,token,n);parent[n]=0;filter=split+(pointer?2:1);}
+        if(strcmp(parent,cached_parent)||pointer!=cached_pointer){
+            snprintf(cached_parent,sizeof(cached_parent),"%s",parent);cached_pointer=pointer;member_count=0;
+            if(parent[0]&&g->state==GDB_STOPPED){
+                int child_count=0;
+                if(!gdb_list_children(g,parent,children,GD_MAX_CHILDREN,&child_count)){
+                    for(int i=0;i<child_count;i++)condition_add(members,&member_count,children[i].expression,children[i].type,children[i].value,tui_text("Member","メンバ"));
+                }else snprintf(status,sizeof(status),"%s",g->message);
+            }
+        }
+        ConditionCandidate *items=parent[0]?members:base;
+        int count=parent[0]?member_count:base_count,matches[CONDITION_CANDIDATES],match_count=0;
+        for(int i=0;i<count;i++){
+            const char *name=items[i].expression;
+            if(parent[0]){const char *last=NULL;for(const char *p=name;*p;p++){if(*p=='.')last=p;else if(*p=='-'&&p[1]=='>')last=p+1;}if(last)name=last+1;}
+            if(!strncmp(name,filter,strlen(filter)))matches[match_count++]=i;
+        }
+        if(selected>=match_count)selected=match_count?match_count-1:0;
+        int rows=getmaxy(stdscr);
+        erase();WINDOW *w=create_popup(tui_text("Conditional Breakpoint","条件付きBreakpoint"),rows-2,110);
+        if(!w)break;
+        int height,width;getmaxyx(w,height,width);
+        if(height<14||width<50){delwin(w);snprintf(g->message,sizeof(g->message),"%s",tui_text("Condition editor needs a larger terminal (50x16)","条件編集には50列×16行以上の端末が必要です"));break;}
+        char line[2048];
+        snprintf(line,sizeof(line),tui_text("Location: %s:%d","設定位置: %s:%d"),path_name(source->path),requested);add_clipped(w,1,2,line,width-4);
+        snprintf(line,sizeof(line),tui_text("Candidates: current frame #%d %s() ONLY","候補: 現在フレーム #%d %s() の変数（設定位置で使えるとは限りません）"),g->selected_frame,g->function);add_clipped(w,2,2,line,width-4);
+        add_clipped(w,3,2,tui_text("Enter: GDB validates at breakpoint location. Ctrl-V: evaluate here (may have side effects).","Enter: 設定位置でGDBが検証。Ctrl-V: 現在フレームで評価（副作用のある式に注意）"),width-4);
+        wattron(w,A_BOLD|COLOR_PAIR(COLOR_INFO));
+        snprintf(line,sizeof(line),tui_text("Condition: %s_","条件: %s_"),input);
+        /* Keep the tail visible while composing long AND/OR conditions. */
+        if(display_width(line)>width-4)snprintf(line,sizeof(line),"...%s_",input+strlen(input)-(size_t)(width-9));
+        add_clipped(w,5,2,line,width-4);wattroff(w,A_BOLD|COLOR_PAIR(COLOR_INFO));
+        add_clipped(w,7,2,tui_text("Expression                          Type / Current value","式                                  型 / 現在値"),width-4);
+        int page=height-12;
+        if(selected<top)top=selected;
+        if(selected>=top+page)top=selected-page+1;
+        if(!match_count)add_clipped(w,8,2,tui_text("No candidates. Enter an expression manually, or stop in the target frame.","候補なし。式を手入力するか、対象フレームで停止してください。"),width-4);
+        for(int row=0;row<page&&top+row<match_count;row++){
+            ConditionCandidate *c=&items[matches[top+row]];
+            if(top+row==selected)wattron(w,A_REVERSE);
+            snprintf(line,sizeof(line),"%s [%s] %s",top+row==selected?">":" ",c->group,c->expression);add_clipped(w,8+row,2,line,width/2-3);
+            snprintf(line,sizeof(line),"%s = %s",c->type,c->value);add_clipped(w,8+row,width/2,line,width/2-2);
+            if(top+row==selected)wattroff(w,A_REVERSE);
+        }
+        add_clipped(w,height-3,2,status,width-4);
+        add_clipped(w,height-2,2,tui_text("Up/Down: select  Tab: insert  Right: members  Ctrl-U: clear  Enter: set  Esc: cancel","↑↓ 選択  Tab 挿入  → メンバ  Ctrl-U 消去  Enter 設定  Esc 中止"),width-4);
+        wrefresh(w);wtimeout(w,-1);int ch=wgetch(w);delwin(w);
+        if(ch==27){snprintf(g->message,sizeof(g->message),"%s",tui_text("Conditional breakpoint cancelled","条件付きBreakpointを中止しました"));break;}
+        if(ch==KEY_UP){if(selected>0)selected--;continue;}
+        if(ch==KEY_DOWN){if(selected+1<match_count)selected++;continue;}
+        if((ch=='\t'||ch==KEY_RIGHT)&&match_count){
+            ConditionCandidate *c=&items[matches[selected]];
+            const char *suffix=ch==KEY_RIGHT?(strchr(c->type,'*')?"->":"."):"";
+            if(token_start+strlen(c->expression)+strlen(suffix)<sizeof(input))snprintf(input+token_start,sizeof(input)-token_start,"%s%s",c->expression,suffix);
+            selected=top=0;status[0]=0;continue;
+        }
+        if(ch==22){
+            if(g->state!=GDB_STOPPED)snprintf(status,sizeof(status),"%s",tui_text("Current-frame evaluation requires a stopped process","現在フレームでの評価には停止が必要です"));
+            else if(input[0]){char value[GD_TEXT_MAX];if(gdb_print(g,input,value,sizeof(value)))snprintf(status,sizeof(status),"%s",g->message);else snprintf(status,sizeof(status),tui_text("Current frame value: %.900s (not validation for another location)","現在フレームでの値: %.900s（別の設定位置の検証ではありません）"),value);}
+            continue;
+        }
+        if(ch=='\n'||ch==KEY_ENTER){
+            if(!input[0]){snprintf(status,sizeof(status),"%s",tui_text("Enter a condition","条件を入力してください"));continue;}
+            int oldmax=newest_break_number(g);
+            if(!gdb_set_cond_breakpoint(g,source->path,requested,input)){
+                int actual=new_break_line(g,source->path,oldmax);if(actual>0)*cursor=actual-1;break;
+            }
+            snprintf(status,sizeof(status),"%s",g->message);continue;
+        }
+        size_t len=strlen(input);
+        if(ch==21)input[0]=0;
+        else if(ch==KEY_BACKSPACE||ch==127||ch==8){if(len)input[len-1]=0;}
+        else if(ch>=32&&ch<127&&len+1<sizeof(input)){input[len]=(char)ch;input[len+1]=0;}
+        selected=top=0;status[0]=0;
+    }
+    touchwin(stdscr);timeout(80);
+}
+
 static bool prompt_text(const char*label,char*out,size_t size){int rows,cols;getmaxyx(stdscr,rows,cols);timeout(-1);echo();curs_set(1);move(rows-1,0);clrtoeol();clipped(rows-1,0,cols-1,"%s",label);int x=display_width(label);move(rows-1,x);int rc=getnstr(out,(int)size-1);noecho();curs_set(0);timeout(80);return rc!=ERR&&out[0];}
 static bool confirm_quit(const Gdb*g){char a[8]="";return prompt_text(g->attached_pid?tui_text("Detach and leave the process running? [y/N] ","接続を解除してプロセスを続行しますか？ [y/N] "):tui_text("Debuggee is active. Quit? [y/N] ","デバッグ対象が動作中です。終了しますか？ [y/N] "),a,sizeof(a))&&(a[0]=='y'||a[0]=='Y');}
 int main(int argc,char**argv){
@@ -568,7 +703,7 @@ int main(int argc,char**argv){
             else if(ch=='a'&&var_count){if(stopped){if(!build_address_panel(&g,var_rows,var_count,var_selected,&address_panel))view=VIEW_ADDRESS;}else snprintf(g.message,sizeof(g.message),"%s",tui_text("Stop the program before inspecting addresses","アドレスを確認する前にプログラムを停止してください"));}
             else if(ch=='E'&&var_count){if(!stopped)snprintf(g.message,sizeof(g.message),"%s",tui_text("Stop the program before modifying a value","値を変更する前にプログラムを停止してください"));else if(var_rows[var_selected].header)snprintf(g.message,sizeof(g.message),"%s",tui_text("Select a variable to modify","変更する変数を選択してください"));else if(strstr(var_rows[var_selected].value,"<optimized out>"))snprintf(g.message,sizeof(g.message),"%s",tui_text("Cannot modify variable: value is optimized out.","変数を変更できません: 最適化により値が削除されています。"));else{memset(&edit_dialog,0,sizeof(edit_dialog));edit_dialog.kind=EDIT_VARIABLE;snprintf(edit_dialog.expression,sizeof(edit_dialog.expression),"%s",var_rows[var_selected].expression);snprintf(edit_dialog.label,sizeof(edit_dialog.label),"%s",var_rows[var_selected].expression);snprintf(edit_dialog.type,sizeof(edit_dialog.type),"%s",var_rows[var_selected].type);snprintf(edit_dialog.current,sizeof(edit_dialog.current),"%s",var_rows[var_selected].value);view=VIEW_EDIT_VALUE;}}
             else if(ch=='w'&&var_count){if(stopped)gdb_watch(&g,var_rows[var_selected].expression);else snprintf(g.message,sizeof(g.message),"%s",tui_text("Stop the program before setting a watchpoint","Watchpointを設定する前にプログラムを停止してください"));}
-            else if(ch=='B'&&var_count){if(!src.path[0])snprintf(g.message,sizeof(g.message),"%s",tui_text("No source location for conditional breakpoint","条件付きBreakpointを設定するソース位置がありません"));else if(!src.debug_lines)snprintf(g.message,sizeof(g.message),"%s",tui_text("Source line breakpoint unavailable: no debug line information.","ソース行Breakpointを設定できません: デバッグ行情報がありません。"));else{input[0]='\0';char label[700];snprintf(label,sizeof(label),tui_text("Condition for %s (e.g. == 5): ","%sの条件（例: == 5）: "),var_rows[var_selected].expression);if(prompt_text(label,input,sizeof(input))){char condition[1536];if(strchr("=!<>&|",input[0]))snprintf(condition,sizeof(condition),"(%.*s) %.*s",500,var_rows[var_selected].expression,900,input);else snprintf(condition,sizeof(condition),"%s",input);int oldmax=newest_break_number(&g),requested=cursor+1;if(!gdb_set_cond_breakpoint(&g,src.path,requested,condition)){int actual=new_break_line(&g,src.path,oldmax);if(actual>0)cursor=actual-1;}}}}
+            else if(ch=='B'&&var_count){if(!src.path[0])snprintf(g.message,sizeof(g.message),"%s",tui_text("No source location for conditional breakpoint","条件付きBreakpointを設定するソース位置がありません"));else if(!src.debug_lines)snprintf(g.message,sizeof(g.message),"%s",tui_text("Source line breakpoint unavailable: no debug line information.","ソース行Breakpointを設定できません: デバッグ行情報がありません。"));else condition_dialog(&g,&src,&cursor,var_rows[var_selected].expression,var_rows,var_count);}
             else if(ch=='q'){if(g.state==GDB_RUNNING||g.state==GDB_STOPPED){if(confirm_quit(&g))done=true;}else done=true;}
             else snprintf(g.message,sizeof(g.message),"%s",tui_text("Variables: Enter expand, p value, a address, w watch, B conditional breakpoint","変数: Enter 展開、p 値、a アドレス、w 監視、B 条件付きBreakpoint"));
             continue;
@@ -685,7 +820,7 @@ int main(int argc,char**argv){
         }
         else if(ch=='B'&&src.path[0]){
             if(!src.debug_lines)snprintf(g.message,sizeof(g.message),"%s",tui_text("Source line breakpoint unavailable: no debug line information.","ソース行Breakpointを設定できません: デバッグ行情報がありません。"));
-            else{input[0]=0;if(prompt_text(tui_text("Condition: ","条件: "),input,sizeof(input))){int oldmax=newest_break_number(&g),requested=cursor+1;if(!gdb_set_cond_breakpoint(&g,src.path,requested,input)){int actual=new_break_line(&g,src.path,oldmax);if(actual>0){cursor=actual-1;if(actual!=requested)snprintf(g.message,sizeof(g.message),tui_text("Conditional breakpoint moved to executable line %d","条件付きBreakpointを実行可能な%d行目へ移動しました"),actual);}}}}
+            else condition_dialog(&g,&src,&cursor,"",var_rows,var_count);
         }
         else if(ch=='w'&&stopped){input[0]=0;if(prompt_text(tui_text("Watch variable/expression: ","監視する変数／式: "),input,sizeof(input)))gdb_watch(&g,input);}
         else if(ch=='p'&&stopped){input[0]=0;if(prompt_text(tui_text("Print expression: ","評価する式: "),input,sizeof(input))){char value[GD_TEXT_MAX];gdb_print(&g,input,value,sizeof(value));}}

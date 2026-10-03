@@ -502,7 +502,33 @@ static void condition_dialog(Gdb *g,Source *source,int *cursor,const char *initi
     touchwin(stdscr);timeout(80);
 }
 
-static bool prompt_text(const char*label,char*out,size_t size){int rows,cols;getmaxyx(stdscr,rows,cols);timeout(-1);echo();curs_set(1);move(rows-1,0);clrtoeol();clipped(rows-1,0,cols-1,"%s",label);int x=display_width(label);move(rows-1,x);int rc=getnstr(out,(int)size-1);noecho();curs_set(0);timeout(80);return rc!=ERR&&out[0];}
+static bool prompt_text(const char *label,char *out,size_t size){
+    if(!size)return false;
+    out[0]='\0';
+    timeout(-1);noecho();curs_set(1);
+    bool accepted=false;
+    for(;;){
+        int rows,cols;getmaxyx(stdscr,rows,cols);
+        move(rows-1,0);clrtoeol();clipped(rows-1,0,cols-1,"%s",label);
+        int x=display_width(label);if(x>cols-2)x=cols-2;if(x<0)x=0;
+        size_t start=0,len=strlen(out);
+        while(start<len&&display_width(out+start)>cols-x-2){
+            start++;
+            while(start<len&&((unsigned char)out[start]&0xc0)==0x80)start++;
+        }
+        clipped(rows-1,x,cols-x-1,"%s",out+start);
+        move(rows-1,x+display_width(out+start));refresh();
+        int ch=getch();
+        if(ch==27||ch==ERR){out[0]='\0';move(rows-1,0);clrtoeol();break;}
+        if(ch=='\n'||ch=='\r'||ch==KEY_ENTER){accepted=out[0]!='\0';break;}
+        if(ch==KEY_BACKSPACE||ch==127||ch==8){
+            if(len){len--;while(len&&((unsigned char)out[len]&0xc0)==0x80)len--;out[len]='\0';}
+        }else if(ch==21)out[0]='\0';
+        else if(ch>=32&&ch<=255&&len+1<size){out[len]=(char)ch;out[len+1]='\0';}
+    }
+    curs_set(0);timeout(80);
+    return accepted;
+}
 static bool confirm_quit(const Gdb*g){char a[8]="";return prompt_text(g->attached_pid?tui_text("Detach and leave the process running? [y/N] ","接続を解除してプロセスを続行しますか？ [y/N] "):tui_text("Debuggee is active. Quit? [y/N] ","デバッグ対象が動作中です。終了しますか？ [y/N] "),a,sizeof(a))&&(a[0]=='y'||a[0]=='Y');}
 int main(int argc,char**argv){
     setlocale(LC_ALL,"");

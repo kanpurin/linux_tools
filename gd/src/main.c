@@ -691,6 +691,15 @@ int main(int argc,char**argv){
             }
             continue;
         }
+        /* Handle search cancellation before pane, mode and Assembly dispatch. */
+        if(ch==27){
+            search_active=false;last_search[0]='\0';search_whole_word=false;
+            search_direction=1;vim_count=0;
+            snprintf(g.message,sizeof(g.message),"%s",mode==MODE_GDB?
+                     tui_text("Search cleared; n is debugger next","検索を解除しました。nはデバッガーのnextです"):
+                     tui_text("Search and highlights cleared","検索とハイライトを解除しました"));
+            continue;
+        }
         if(ch=='\t'){focus=cycle_focus(focus,code_view,1);snprintf(g.message,sizeof(g.message),tui_text("Focus: %s","フォーカス: %s"),focus_name(focus));continue;}
         if(ch==KEY_BTAB){focus=cycle_focus(focus,code_view,-1);snprintf(g.message,sizeof(g.message),tui_text("Focus: %s","フォーカス: %s"),focus_name(focus));continue;}
         if(ch==KEY_F(2)){mode=mode==MODE_VIM?MODE_GDB:MODE_VIM;search_active=false;vim_count=0;snprintf(g.message,sizeof(g.message),"%s",mode==MODE_VIM?tui_text("VIM navigation mode","VIM操作モード"):tui_text("GDB control mode","GDB操作モード"));continue;}
@@ -800,7 +809,6 @@ int main(int argc,char**argv){
             else snprintf(g.message,sizeof(g.message),tui_text("Search text not found: %.*s  [Esc end]","検索文字列が見つかりません: %.*s  [Esc 終了]"),700,last_search);
             continue;
         }
-        if(search_active&&ch==27){search_active=false;snprintf(g.message,sizeof(g.message),"%s",tui_text("Search ended; n is debugger next","検索を終了しました。nはデバッガーのnextです"));continue;}
         if(search_active&&ch!='/'&&ch!='j'&&ch!='k'&&ch!=KEY_UP&&ch!=KEY_DOWN&&ch!=KEY_NPAGE&&ch!=KEY_PPAGE&&ch!=4&&ch!=21&&ch!='g'&&ch!='G')search_active=false;
         if(ch=='j'||ch==KEY_DOWN){if(cursor+1<src.count)cursor++;}
         else if(ch=='k'||ch==KEY_UP){if(cursor>0)cursor--;}

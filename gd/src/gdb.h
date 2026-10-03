@@ -189,5 +189,7 @@ int gdb_refresh(Gdb *g);
 int gdb_refresh_breakpoints(Gdb *g);
 int gdb_list_children(Gdb *g, const char *expression, GdbChild *children,
                       int max_children, int *child_count);
+int gdb_scope_candidates(Gdb *g, const char *file, int line, const char *parent,
+                         GdbChild *items, int max_items, int *count);
 
 #endif

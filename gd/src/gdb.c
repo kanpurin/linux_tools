@@ -74,6 +74,11 @@ static void quote_mi(const char *src, char *dst, size_t size) {
     size_t n = 0;
     if (size) dst[n++] = '"';
     for (; *src && n + 2 < size; ++src) {
+        if (*src == '\n' || *src == '\r' || *src == '\t') {
+            dst[n++] = '\\';
+            dst[n++] = *src == '\n' ? 'n' : *src == '\r' ? 'r' : 't';
+            continue;
+        }
         if (*src == '\\' || *src == '"') dst[n++] = '\\';
         dst[n++] = *src;
     }
@@ -470,7 +475,7 @@ int gdb_set_function_breakpoint(Gdb *g, const char *function) {
 
 static int console_command(Gdb *g, const char *command, char *output,
                            size_t output_size) {
-    char quoted[4096], result[16384];
+    char quoted[8192], result[16384];
     char saved_output[sizeof(g->output)];
     size_t before = g->output_len;
     memcpy(saved_output, g->output, before + 1);
@@ -485,6 +490,75 @@ static int console_command(Gdb *g, const char *command, char *output,
     }
     size_t saved_len = strlen(saved_output);
     memcpy(g->output, saved_output, saved_len + 1); g->output_len = saved_len;
+    return 0;
+}
+
+/* Use GDB's symbol/type API without evaluating the inferior. This works before
+   run, including members of pointers whose runtime value does not exist yet. */
+int gdb_scope_candidates(Gdb *g, const char *file, int line, const char *parent,
+                         GdbChild *items, int max_items, int *count) {
+    char location[1200], qlocation[2400], qparent[1100];
+    char script[4096], qscript[8192], command[8192], output[32768];
+    *count = 0;
+    if (strlen(file) > 1000 || (parent && strlen(parent) > 500)) return -1;
+    snprintf(location, sizeof(location), "%s:%d", file, line);
+    quote_mi(location, qlocation, sizeof(qlocation));
+    quote_mi(parent ? parent : "", qparent, sizeof(qparent));
+    int n = snprintf(script, sizeof(script),
+        "import gdb,re\n"
+        "loc=gdb.decode_line(%s)[1]\n"
+        "if not loc: raise gdb.GdbError('No debug scope at this location')\n"
+        "b=gdb.block_for_pc(loc[0].pc)\n"
+        "p=%s\n"
+        "def emit(name,typ,expr):\n"
+        " print('GD_SCOPE\\t'+name+'\\t'+str(typ).replace('\\n',' ')+'\\t'+expr)\n"
+        "if p:\n"
+        " parts=re.split(r'->|\\.',p.replace('(','').replace(')',''))\n"
+        " if not all(re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*',x) for x in parts): raise gdb.GdbError('Unsupported member expression')\n"
+        " sym=gdb.lookup_symbol(parts[0],b)[0]\n"
+        " if sym is None: raise gdb.GdbError('Variable not found in selected scope')\n"
+        " typ=sym.type\n"
+        " for member in parts[1:]:\n"
+        "  typ=typ.strip_typedefs()\n"
+        "  if typ.code==gdb.TYPE_CODE_PTR: typ=typ.target().strip_typedefs()\n"
+        "  typ=next(f.type for f in typ.fields() if f.name==member)\n"
+        " typ=typ.strip_typedefs()\n"
+        " ptr=typ.code==gdb.TYPE_CODE_PTR\n"
+        " if ptr: typ=typ.target().strip_typedefs()\n"
+        " for f in typ.fields():\n"
+        "  if f.name: emit(f.name,f.type,'('+p+')'+('->' if ptr else '.')+f.name)\n"
+        "else:\n"
+        " seen=set()\n"
+        " while b is not None and len(seen)<%d:\n"
+        "  for s in b:\n"
+        "   if (s.is_argument or s.is_variable) and s.name not in seen:\n"
+        "    seen.add(s.name);emit(s.name,s.type,s.name)\n"
+        "    if len(seen)>=%d: break\n"
+        "  b=b.superblock\n", qlocation, qparent, max_items, max_items);
+    if (n < 0 || (size_t)n >= sizeof(script)) return -1;
+    quote_mi(script, qscript, sizeof(qscript));
+    n = snprintf(command, sizeof(command), "python exec(%s)", qscript);
+    /* console_command quotes the Python string once more for MI. */
+    if (n < 0 || n > 3500) return -1;
+    if (console_command(g, command, output, sizeof(output))) return -1;
+    for (char *p = output; *p && *count < max_items;) {
+        char *end = strchr(p, '\n');
+        if (end) *end = 0;
+        if (!strncmp(p, "GD_SCOPE\t", 9)) {
+            char *name=p+9, *type=strchr(name,'\t');
+            char *expression=type?strchr(type+1,'\t'):NULL;
+            if (type && expression) {
+                *type++=0;*expression++=0;
+                GdbChild *c=&items[(*count)++];memset(c,0,sizeof(*c));
+                copy_text(c->name,sizeof(c->name),name);
+                copy_text(c->type,sizeof(c->type),type);
+                copy_text(c->expression,sizeof(c->expression),expression);
+                copy_text(c->value,sizeof(c->value),gtext(g,"<not running>","<実行前・値なし>"));
+            }
+        }
+        if (!end) break;
+        p=end+1;
+    }
     return 0;
 }
 

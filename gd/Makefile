@@ -33,6 +33,8 @@ check: $(TARGET)
 	$(CC) $(CFLAGS) -g -O0 -o tests/multi_fixture tests/multi_main.c tests/multi_helper.c
 	$(CC) $(CFLAGS) -g -O0 -o tests/address_fixture tests/address_fixture.c
 	$(CC) $(CFLAGS) -g -O0 -o tests/frame_vars_fixture tests/frame_vars_fixture.c
+	$(CC) $(CFLAGS) -o tests/scope_smoke tests/scope_smoke.c src/gdb.c
+	tests/scope_smoke tests/frame_vars_fixture $(CURDIR)/tests/frame_vars_fixture.c
 	$(CC) $(CFLAGS) -g -O0 -o tests/mutation_fixture tests/mutation_fixture.c
 	$(CC) $(CFLAGS) -g -O0 -o tests/catch_fixture tests/catch_fixture.c
 	$(CC) $(CFLAGS) -O0 -fno-inline -o tests/nodebug_fixture tests/nodebug_fixture.c
@@ -59,5 +61,6 @@ check: $(TARGET)
 	tests/catch_smoke tests/catch_fixture
 
 clean:
+	rm -f tests/scope_smoke
 	rm -f tests/attach_fixture tests/attach_nodebug_fixture tests/attach_smoke
 	rm -f $(TARGET) tests/fixture tests/pane_fixture tests/word_fixture tests/multi_fixture tests/address_fixture tests/frame_vars_fixture tests/mutation_fixture tests/catch_fixture tests/nodebug_fixture tests/mixed_debug_fixture tests/mixed_debug_main.o tests/mixed_nodebug.o tests/api_smoke tests/children_smoke tests/multifile_smoke tests/address_smoke tests/frame_vars_smoke tests/assembly_smoke tests/mixed_mode_smoke tests/mutation_smoke tests/catch_smoke

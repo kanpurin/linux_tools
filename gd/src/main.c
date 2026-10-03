@@ -396,6 +396,7 @@ static void condition_dialog(Gdb *g,Source *source,int *cursor,const char *initi
     snprintf(input,sizeof(input),"%s",initial?initial:"");
     int requested=*cursor+1;
     if(g->state==GDB_RUNNING){snprintf(g->message,sizeof(g->message),"%s",tui_text("Stop the program before editing conditions","条件を編集する前にプログラムを停止してください"));return;}
+    bool offline=g->state!=GDB_STOPPED;
     for(int i=0;i<g->arg_count;i++)condition_add(base,&base_count,g->args[i].name,g->args[i].type,g->args[i].value,tui_text("Arg","引数"));
     for(int i=0;i<g->local_count;i++)condition_add(base,&base_count,g->locals[i].name,g->locals[i].type,g->locals[i].value,tui_text("Local","ローカル"));
     for(int i=0;i<visible_count;i++)if(!visible[i].header&&visible[i].depth)
@@ -404,6 +405,12 @@ static void condition_dialog(Gdb *g,Source *source,int *cursor,const char *initi
         char value[GD_TEXT_MAX];
         if(!gdb_print(g,base[i].expression,value,sizeof(value)))
             snprintf(base[i].value,sizeof(base[i].value),"%s",value);
+    }
+    if(offline){
+        int count=0;base_count=0;
+        if(!gdb_scope_candidates(g,source->path,requested,"",children,GD_MAX_CHILDREN,&count)){
+            for(int i=0;i<count;i++)condition_add(base,&base_count,children[i].expression,children[i].type,children[i].value,tui_text("Scope","選択行"));
+        }else snprintf(status,sizeof(status),"%s",g->message);
     }
     for(;;){
         size_t token_start=condition_token(input);
@@ -417,9 +424,10 @@ static void condition_dialog(Gdb *g,Source *source,int *cursor,const char *initi
         if(split){size_t n=(size_t)(split-token);if(n>=sizeof(parent))n=sizeof(parent)-1;memcpy(parent,token,n);parent[n]=0;filter=split+(pointer?2:1);}
         if(strcmp(parent,cached_parent)||pointer!=cached_pointer){
             snprintf(cached_parent,sizeof(cached_parent),"%s",parent);cached_pointer=pointer;member_count=0;
-            if(parent[0]&&g->state==GDB_STOPPED){
+            if(parent[0]){
                 int child_count=0;
-                if(!gdb_list_children(g,parent,children,GD_MAX_CHILDREN,&child_count)){
+                int result=offline?gdb_scope_candidates(g,source->path,requested,parent,children,GD_MAX_CHILDREN,&child_count):gdb_list_children(g,parent,children,GD_MAX_CHILDREN,&child_count);
+                if(!result){
                     for(int i=0;i<child_count;i++)condition_add(members,&member_count,children[i].expression,children[i].type,children[i].value,tui_text("Member","メンバ"));
                 }else snprintf(status,sizeof(status),"%s",g->message);
             }
@@ -439,7 +447,9 @@ static void condition_dialog(Gdb *g,Source *source,int *cursor,const char *initi
         if(height<14||width<50){delwin(w);snprintf(g->message,sizeof(g->message),"%s",tui_text("Condition editor needs a larger terminal (50x16)","条件編集には50列×16行以上の端末が必要です"));break;}
         char line[2048];
         snprintf(line,sizeof(line),tui_text("Location: %s:%d","設定位置: %s:%d"),path_name(source->path),requested);add_clipped(w,1,2,line,width-4);
-        snprintf(line,sizeof(line),tui_text("Candidates: current frame #%d %s() ONLY","候補: 現在フレーム #%d %s() の変数（設定位置で使えるとは限りません）"),g->selected_frame,g->function);add_clipped(w,2,2,line,width-4);
+        if(offline)snprintf(line,sizeof(line),"%s",tui_text("Candidates: debug symbols at selected line; runtime values unavailable","候補: 選択行のデバッグ情報（実行前のため現在値なし）"));
+        else snprintf(line,sizeof(line),tui_text("Candidates: current frame #%d %s() ONLY","候補: 現在フレーム #%d %s() の変数（設定位置で使えるとは限りません）"),g->selected_frame,g->function);
+        add_clipped(w,2,2,line,width-4);
         add_clipped(w,3,2,tui_text("Enter: GDB validates at breakpoint location. Ctrl-V: evaluate here (may have side effects).","Enter: 設定位置でGDBが検証。Ctrl-V: 現在フレームで評価（副作用のある式に注意）"),width-4);
         wattron(w,A_BOLD|COLOR_PAIR(COLOR_INFO));
         snprintf(line,sizeof(line),tui_text("Condition: %s_","条件: %s_"),input);
@@ -522,7 +532,7 @@ int main(int argc,char**argv){
     if(ui_japanese&&!strcmp(g.message,"Ready - press r to run"))snprintf(g.message,sizeof(g.message),"準備完了 - rで実行");
     initscr();
     if(has_colors()){start_color();use_default_colors();init_pair(COLOR_BREAK,COLOR_CYAN,-1);init_pair(COLOR_COND,COLOR_YELLOW,-1);init_pair(COLOR_WATCH,COLOR_GREEN,-1);init_pair(COLOR_ERROR,COLOR_RED,-1);init_pair(COLOR_INFO,COLOR_CYAN,-1);init_pair(COLOR_MUTED,COLOR_WHITE,-1);}
-    cbreak();noecho();keypad(stdscr,TRUE);curs_set(0);timeout(80);
+    cbreak();noecho();keypad(stdscr,TRUE);set_escdelay(25);curs_set(0);timeout(80);
     Source src={0};SourceHistory history={.index=-1};char project_root[GD_PATH_MAX]="";
     project_root_init(&g,project_root,sizeof(project_root));
     View view=VIEW_MAIN;InputMode mode=MODE_GDB;CodeView code_view=g.source_available?CODE_SOURCE:CODE_ASSEMBLY;PaneFocus focus=PANE_SOURCE;

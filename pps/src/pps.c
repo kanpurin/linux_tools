@@ -32,7 +32,8 @@
 typedef struct {
     pid_t pid, ppid, session, tpgid;
     uid_t uid;
-    char user[64], comm[256], command[4096];
+    char user[64], comm[256];
+    char *command;
     char state;
     long tty_nr, nice, threads;
     unsigned long long utime, stime, start_ticks, vsize;
@@ -40,6 +41,7 @@ typedef struct {
     double cpu, mem;
     time_t started;
     char *row;
+    bool metadata_loaded;
 } Process;
 
 typedef struct {
@@ -50,6 +52,7 @@ typedef struct {
 
 typedef enum { SORT_PID, SORT_CPU, SORT_MEM, SORT_START, SORT_TIME } SortKey;
 typedef enum { ACT_INFO, ACT_FD, ACT_THREADS, ACT_TREE, ACT_LIMITS, ACT_SIGNAL } Action;
+typedef enum { SCAN_DETAILS, SCAN_RELATIONS } ScanMode;
 
 typedef struct {
     int tty;
@@ -199,18 +202,19 @@ static bool parse_stat(pid_t pid, Process *p) {
 }
 
 static void read_command(pid_t pid, Process *p) {
-    char path[64], buf[sizeof p->command];
+    char path[64], buf[4096];
     ssize_t n = 0;
     snprintf(path, sizeof path, "/proc/%d/cmdline", pid);
     if (read_text(path, buf, sizeof buf, &n) && n > 0) {
         for (ssize_t i = 0; i < n - 1; i++) if (buf[i] == '\0') buf[i] = ' ';
         while (n > 0 && (buf[n - 1] == '\0' || buf[n - 1] == ' ')) n--;
         buf[n] = '\0';
-        snprintf(p->command, sizeof p->command, "%s", buf);
-        sanitize_text(p->command);
+        sanitize_text(buf);
     } else {
-        snprintf(p->command, sizeof p->command, "[%s]", p->comm);
+        snprintf(buf, sizeof buf, "[%s]", p->comm);
     }
+    p->command = strdup(buf);
+    if (!p->command) die("out of memory");
 }
 
 static void read_exe(pid_t pid, char *out, size_t cap) {
@@ -274,7 +278,7 @@ static void format_row(Process *p) {
     if (!p->row) die("out of memory");
 }
 
-static bool load_process_basic(pid_t pid, Process *p) {
+static bool load_process_metadata(pid_t pid, Process *p) {
     memset(p, 0, sizeof *p);
     p->pid = pid;
     char path[64];
@@ -283,23 +287,40 @@ static bool load_process_basic(pid_t pid, Process *p) {
     if (stat(path, &st) != 0) return false;
     p->uid = st.st_uid;
     if (!parse_stat(pid, p)) return false;
+    p->metadata_loaded = true;
+    return true;
+}
+
+static bool load_process_basic(pid_t pid, Process *p) {
+    if (!load_process_metadata(pid, p)) return false;
     read_command(pid, p);
     return true;
 }
 
-static void complete_process(Process *p, bool make_row) {
-    user_name(p->uid, p->user, sizeof p->user);
+static void calculate_process_metrics(Process *p) {
     double age = g_uptime - (double)p->start_ticks / g_hz;
     double cpu_seconds = (double)(p->utime + p->stime) / g_hz;
     p->cpu = age > 0.01 ? 100.0 * cpu_seconds / age : 0.0;
     unsigned long long rss_kb = (unsigned long long)(p->rss_pages > 0 ? p->rss_pages : 0) * g_pagesize / 1024;
     p->mem = g_memtotal_kb ? 100.0 * rss_kb / g_memtotal_kb : 0.0;
     p->started = g_boot_time + (time_t)(p->start_ticks / (unsigned long long)g_hz);
+}
+
+static void complete_process(Process *p, bool make_row) {
+    calculate_process_metrics(p);
+    user_name(p->uid, p->user, sizeof p->user);
     if (make_row) format_row(p);
 }
 
+static void process_dispose(Process *p) {
+    free(p->command);
+    free(p->row);
+    p->command = NULL;
+    p->row = NULL;
+}
+
 static void list_free(ProcessList *l) {
-    for (size_t i = 0; i < l->n; i++) free(l->v[i].row);
+    for (size_t i = 0; i < l->n; i++) process_dispose(&l->v[i]);
     free(l->v);
     memset(l, 0, sizeof *l);
 }
@@ -313,7 +334,7 @@ static void list_add(ProcessList *l, const Process *p) {
 }
 
 static void list_remove(ProcessList *l, size_t at) {
-    free(l->v[at].row);
+    process_dispose(&l->v[at]);
     l->n--;
     if (at < l->n)
         memmove(&l->v[at], &l->v[at + 1], (l->n - at) * sizeof *l->v);
@@ -325,17 +346,33 @@ static bool materialize_process(ProcessList *l, size_t at) {
     Process loaded;
     if (!load_process_basic(p->pid, &loaded)) return false;
     /* A PID reused after enumeration must not become a row in this snapshot. */
-    if (loaded.start_ticks > l->snapshot_ticks) return false;
+    if (loaded.start_ticks > l->snapshot_ticks ||
+        (p->metadata_loaded && loaded.start_ticks != p->start_ticks)) {
+        process_dispose(&loaded);
+        return false;
+    }
     complete_process(&loaded, true);
     *p = loaded;
     return true;
 }
 
-static void materialize_all(ProcessList *l) {
+static bool materialize_metadata(ProcessList *l, size_t at) {
+    Process *p = &l->v[at];
+    if (p->metadata_loaded) return true;
+    Process loaded;
+    if (!load_process_metadata(p->pid, &loaded)) return false;
+    if (loaded.start_ticks > l->snapshot_ticks) return false;
+    calculate_process_metrics(&loaded);
+    *p = loaded;
+    return true;
+}
+
+static void materialize_all(ProcessList *l, bool rows) {
     size_t kept = 0;
     for (size_t i = 0; i < l->n; i++) {
-        if (!materialize_process(l, i)) {
-            free(l->v[i].row);
+        bool loaded = rows ? materialize_process(l, i) : materialize_metadata(l, i);
+        if (!loaded) {
+            process_dispose(&l->v[i]);
             continue;
         }
         if (kept != i) l->v[kept] = l->v[i];
@@ -375,10 +412,10 @@ static bool matches(const Process *p, const char *needle) {
     return !needle || !*needle || strstr(p->comm, needle) || strstr(p->command, needle);
 }
 
-static bool scan_processes(ProcessList *out, const char *filter) {
+static bool scan_processes(ProcessList *out, const char *filter, ScanMode mode) {
     DIR *d = opendir("/proc");
     if (!d) return false;
-    load_system_info();
+    if (mode == SCAN_DETAILS) load_system_info();
     pid_t self = getpid();
     struct dirent *de;
     while ((de = readdir(d))) {
@@ -387,15 +424,19 @@ static bool scan_processes(ProcessList *out, const char *filter) {
         long n = strtol(de->d_name, &end, 10);
         if (*end || n <= 0 || n > INT_MAX) continue;
         if ((pid_t)n == self) continue;
-        Process p;
-        if (!load_process_basic((pid_t)n, &p)) continue;
+        Process p = { .pid = (pid_t)n };
+        if (mode == SCAN_RELATIONS) {
+            if (parse_stat(p.pid, &p)) list_add(out, &p);
+            continue;
+        }
+        if (!load_process_basic(p.pid, &p)) continue;
         bool hit = matches(&p, filter);
         if (!hit) {
             char exe[PATH_MAX];
             read_exe((pid_t)n, exe, sizeof exe);
             hit = strstr(exe, filter) != NULL;
         }
-        if (!hit) continue;
+        if (!hit) { process_dispose(&p); continue; }
         complete_process(&p, true);
         list_add(out, &p);
     }
@@ -607,7 +648,7 @@ static void ui_materialize_visible(UI *ui) {
 static void ui_materialize_all(UI *ui) {
     pid_t selected = ui->list.n ? ui->list.v[ui->selected].pid : 0;
     size_t previous = ui->selected;
-    materialize_all(&ui->list);
+    materialize_all(&ui->list, true);
     ssize_t at = find_pid(&ui->list, selected);
     if (at >= 0) ui->selected = (size_t)at;
     else if (ui->list.n) ui->selected = previous < ui->list.n ? previous : ui->list.n - 1;
@@ -765,11 +806,11 @@ static void refresh_ui(UI *ui) {
     pid_t oldpid = ui->list.n ? ui->list.v[ui->selected].pid : 0;
     size_t oldpos = ui->selected;
     ProcessList fresh = {0};
-    if (!(ui->lazy ? scan_pids(&fresh) : scan_processes(&fresh, ui->filter))) {
+    if (!(ui->lazy ? scan_pids(&fresh) : scan_processes(&fresh, ui->filter, SCAN_DETAILS))) {
         snprintf(ui->message, sizeof ui->message, "pps: cannot read /proc: %s", strerror(errno));
         return;
     }
-    if (ui->lazy && ui->sort != SORT_PID) materialize_all(&fresh);
+    if (ui->lazy && ui->sort != SORT_PID) materialize_all(&fresh, false);
     sort_list(&fresh, ui->sort, ui->descending);
     list_free(&ui->list); ui->list = fresh;
     ssize_t at = find_pid(&ui->list, oldpid);
@@ -790,7 +831,7 @@ static void sort_menu(UI *ui) {
         pid_t pid = ui->list.n ? ui->list.v[ui->selected].pid : 0;
         if (key == ui->sort) ui->descending = !ui->descending;
         else { ui->sort = key; ui->descending = key == SORT_CPU || key == SORT_MEM || key == SORT_TIME; }
-        if (ui->lazy && ui->sort != SORT_PID) materialize_all(&ui->list);
+        if (ui->lazy && ui->sort != SORT_PID) materialize_all(&ui->list, false);
         sort_list(&ui->list, ui->sort, ui->descending);
         ssize_t at = find_pid(&ui->list, pid);
         if (at >= 0) ui->selected = (size_t)at;
@@ -961,10 +1002,13 @@ static int show_info(pid_t pid) {
     putchar('\n');
     if (p.ppid > 0) {
         Process parent; printf("\nParent\n");
-        if (load_process_basic(p.ppid, &parent)) printf("  %s [%d]\n", parent.comm, parent.pid); else printf("  <unavailable>\n");
+        if (load_process_basic(p.ppid, &parent)) {
+            printf("  %s [%d]\n", parent.comm, parent.pid);
+            process_dispose(&parent);
+        } else printf("  <unavailable>\n");
     }
     ProcessList all = {0};
-    if (scan_processes(&all, NULL)) {
+    if (scan_processes(&all, NULL, SCAN_RELATIONS)) {
         bool heading = false;
         for (size_t i = 0; i < all.n; i++) if (all.v[i].ppid == pid) {
             if (!heading) { printf("\nChildren\n"); heading = true; }
@@ -972,6 +1016,7 @@ static int show_info(pid_t pid) {
         }
     }
     list_free(&all);
+    process_dispose(&p);
     return 0;
 }
 
@@ -1055,7 +1100,7 @@ static void tree_print(const ProcessList *l, pid_t pid, const char *prefix, bool
 
 static int show_tree(pid_t pid) {
     ProcessList all = {0};
-    if (!scan_processes(&all, NULL)) { fprintf(stderr, "pps: cannot read /proc: %s\n", strerror(errno)); return 1; }
+    if (!scan_processes(&all, NULL, SCAN_RELATIONS)) { fprintf(stderr, "pps: cannot read /proc: %s\n", strerror(errno)); return 1; }
     if (find_pid(&all, pid) < 0) { list_free(&all); fprintf(stderr, "pps: process %d no longer exists\n", pid); return 1; }
     sort_list(&all, SORT_PID, false); tree_print(&all, pid, "", true, true, 0); list_free(&all); return 0;
 }
@@ -1130,7 +1175,7 @@ int main(int argc, char **argv) {
     filter = target;
     ProcessList list = {0};
     bool lazy = !filter;
-    if (!(lazy ? scan_pids(&list) : scan_processes(&list, filter)))
+    if (!(lazy ? scan_pids(&list) : scan_processes(&list, filter, SCAN_DETAILS)))
         die("cannot read /proc: %s", strerror(errno));
     if (target && list.n == 0) { fprintf(stderr, "pps: no process matched '%s'\n", target); list_free(&list); return 1; }
     if (target && list.n == 1) { pid_t pid = list.v[0].pid; list_free(&list); return perform(pid, action, sig); }

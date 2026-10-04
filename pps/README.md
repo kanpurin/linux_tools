@@ -87,7 +87,7 @@ A name with one match is handled immediately. Multiple matches open Process Sele
 
 TUI output goes directly to `/dev/tty`; stdout is reserved for the small internal protocol used by `pps.bash`. Terminal state is restored on normal exit, cancellation, Ctrl-C, and termination signals.
 
-The unfiltered Process Select loads process details as rows become visible. Processes that exit before their rows are loaded are removed from the list. Searching or sorting by CPU, memory, start time, or CPU time loads the remaining rows; `r` rescans `/proc`.
+The unfiltered Process Select loads process details as rows become visible. Processes that exit before their rows are loaded are removed from the list. Searching loads the remaining rows; sorting by CPU, memory, start time, or CPU time reads their numeric metadata and finishes visible rows on demand. `r` rescans `/proc`.
 
 ## Test
 

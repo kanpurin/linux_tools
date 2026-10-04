@@ -131,6 +131,19 @@ def test_search_sort_refresh():
     finally:
         stop(child)
 
+    name, child = victim("sort-first")
+    try:
+        s = Session()
+        try:
+            for key in b"cmstp":
+                s.send(b"o" + bytes([key]))
+            s.send(b"/" + name.encode() + b"\r")
+            assert s.return_pid() == child.pid
+        finally:
+            s.close()
+    finally:
+        stop(child)
+
     s = Session()
     child = None
     try:
@@ -207,8 +220,9 @@ def test_many_exited():
             before = position(s.initial)[1]
             for child in children:
                 stop(child)
-            after = position(s.send(b"G"))[1]
+            after = position(s.send(b"oc"))[1]
             assert after <= before - len(children), (before, after)
+            assert position(s.send(b"G"))[1] == after
         finally:
             s.close()
     finally:

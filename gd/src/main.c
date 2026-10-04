@@ -228,7 +228,7 @@ static void draw_stack(Gdb*g,int selected,PaneFocus focus,int y,int height,int c
 
 static void draw_main(Gdb*g,Source*s,int cursor,int column,int top,int hscroll,InputMode mode,CodeView code_view,PaneFocus focus,VarRow*var_rows,int var_count,int var_top,int var_selected,int reg_selected,int reg_top,int asm_selected,int asm_top,int stack_selected,const char*search_text,bool search_whole_word,const char*project_root,int history_index,int history_count){int rows,cols,code_h,middle_h,stack_h;getmaxyx(stdscr,rows,cols);layout_heights(rows,&code_h,&middle_h,&stack_h);if(code_view==CODE_ASSEMBLY)while(middle_h<6&&stack_h>2){middle_h++;stack_h--;}erase();attron(A_BOLD|COLOR_PAIR(COLOR_INFO));clipped(0,1,cols-2,"gd [%s] [%s] [%s]",mode==MODE_VIM?"VIM":"GDB",code_view==CODE_ASSEMBLY?"ASM":"SRC",focus_name(focus));attroff(A_BOLD|COLOR_PAIR(COLOR_INFO));clipped(0,30,cols-31,tui_text("| %-11s | Exec frame #%d %s%s%s","| %-8s | 実行フレーム #%d %s%s%s"),state_name(g->state),g->selected_frame,g->function[0]?g->function:"-",g->source_available?":":" @ ",g->source_available?(char[32]){0}:g->pc);if(g->source_available)clipped(0,cols>20?cols-20:0,19,tui_text("Exec line %d","実行行 %d"),g->line);draw_stop_summary(g,cols);if(code_view==CODE_ASSEMBLY)draw_disassembly(g,asm_selected,asm_top,focus,code_h,cols);else draw_source_code(g,s,cursor,column,top,hscroll,mode,focus,search_text,search_whole_word,project_root,history_index,history_count,code_h,cols);int y=3+code_h+1;bool call_selected=asm_selected>=0&&asm_selected<g->instruction_count&&g->instructions[asm_selected].call;if(code_view==CODE_ASSEMBLY)draw_registers(g,reg_selected,reg_top,focus,y,middle_h,cols,call_selected);else draw_variables(g,var_rows,var_count,var_top,var_selected,focus,y,middle_h,cols);y+=middle_h+1;draw_stack(g,stack_selected,focus,y,stack_h,cols,project_root);line_rule(rows-2,NULL);int status_color=!strncmp(g->message,"ERROR",5)||!strncmp(g->message,"エラー",9)?COLOR_ERROR:strstr(g->message,"Watchpoint")||strstr(g->message,"watchpoint")||strstr(g->message,"ウォッチポイント")?COLOR_WATCH:strstr(g->message,"Catch")||strstr(g->message,"Caught")||strstr(g->message,"キャッチポイント")?COLOR_COND:COLOR_INFO;attron(COLOR_PAIR(status_color));clipped(rows-1,1,cols-2,"%s",g->message);attroff(COLOR_PAIR(status_color));}
 static WINDOW*create_popup(const char*title,int wanted_height,int wanted_width){int rows,cols,height,width,x,y;getmaxyx(stdscr,rows,cols);height=wanted_height<rows-2?wanted_height:rows-2;width=wanted_width<cols-2?wanted_width:cols-2;if(height<5)height=rows;if(width<20)width=cols;y=(rows-height)/2;x=(cols-width)/2;WINDOW*window=newwin(height,width,y,x);if(!window)return NULL;keypad(window,TRUE);box(window,0,0);int title_width=display_width(title);if(width>title_width+4){char decorated[256];snprintf(decorated,sizeof(decorated)," %s ",title);add_clipped(window,0,(width-title_width-2)/2,decorated,title_width+2);}return window;}
-static void draw_help_popup(void){static const char*english[]={"Execution","  r / c       Run / Continue","  n / s       Next / Step into","  f           Finish current function and return to caller","              caller has source -> Source, otherwise Assembly","  i / I       Step instruction / Next instruction","  R           Force return (confirmation required)","","View / History","  Tab         Switch pane    Shift-Tab: reverse","  d / e       Source/Assembly / Return to execution position","  o           Open Function / File","  [ / Ctrl-o  View history back    ]: forward","              history only changes the view; f executes","","Stop conditions","  b / B / F   Breakpoint / Conditional / Function","  C / w / S   Catchpoint / Watchpoint / Stop list","","Panes","  Variables   Enter expand, p value, a address, E edit","  Registers   p details, E edit","  Stack       Enter selects frame and opens its location","","Modes / Other","  F2          GDB / read-only VIM mode","  L           Switch UI language (GDB mode)","  VIM         h/j/k/l, /?, n/N, gd/gD, *#, %","  O           Program output","  ?           Help    q: Quit",NULL};static const char*japanese[]={"実行","  r / c       実行 / 継続","  n / s       次の行 / 関数内へステップ","  f           現在の関数から戻るまで実行","              呼出し元にソースあり -> Source、なし -> Assembly","  i / I       1命令実行 / 次の命令へ","  R           強制return（確認あり）","","表示 / 履歴","  Tab         ペイン切替    Shift-Tab: 逆方向","  d / e       Source/Assembly切替 / 実行位置へ戻る","  o           関数 / ファイルを開く","  [ / Ctrl-o  閲覧履歴を戻る    ]: 進む","              履歴は表示のみ変更。fはプログラムを実行","","停止条件","  b / B / F   Breakpoint / 条件付き / 関数","  C / w / S   Catchpoint / Watchpoint / 停止条件一覧","","ペイン","  変数         Enter 展開、p 値、a アドレス、E 編集","  レジスタ     p 詳細、E 編集","  スタック     Enterでフレーム選択と位置移動","","モード / その他","  F2          GDB / 読み取り専用VIMモード","  L           表示言語を切り替え（GDBモード）","  VIM         h/j/k/l、/?、n/N、gd/gD、*#、%","  O           プログラム出力","  ?           ヘルプ    q: 終了",NULL};const char**lines=ui_japanese?japanese:english;int count=0;while(lines[count])count++;WINDOW*window=create_popup(tui_text("Help","ヘルプ"),count+2,76);if(!window)return;int height,width;getmaxyx(window,height,width);for(int i=0;i<count&&i+1<height-1;i++){if(lines[i][0]&&!isspace((unsigned char)lines[i][0]))wattron(window,A_BOLD);add_clipped(window,i+1,2,lines[i],width-4);wattroff(window,A_BOLD);}wnoutrefresh(window);delwin(window);}
+static void draw_help_popup(void){static const char*english[]={"Execution","  r / c       Run / Continue","  n / s       Next / Step into","  f           Finish current function and return to caller","              caller has source -> Source, otherwise Assembly","  i / I       Step instruction / Next instruction","  R           Force return (confirmation required)","","View / History","  Tab         Switch pane    Shift-Tab: reverse","  d / e       Source/Assembly / Return to execution position","  o           Open Function / File","  Ctrl-G      Search project sources","  [ / Ctrl-o  View history back    ]: forward","              history only changes the view; f executes","","Stop conditions","  b / B / F   Breakpoint / Conditional / Function","  C / w / S   Catchpoint / Watchpoint / Stop list","","Panes","  Variables   Enter expand, p value, a address, E edit","  Registers   p details, E edit","  Stack       Enter selects frame and opens its location","","Modes / Other","  F2          GDB / read-only VIM mode","  L           Switch UI language (GDB mode)","  VIM         h/j/k/l, /?, n/N, gd/gD, *#, %","  O           Program output","  ?           Help    q: Quit",NULL};static const char*japanese[]={"実行","  r / c       実行 / 継続","  n / s       次の行 / 関数内へステップ","  f           現在の関数から戻るまで実行","              呼出し元にソースあり -> Source、なし -> Assembly","  i / I       1命令実行 / 次の命令へ","  R           強制return（確認あり）","","表示 / 履歴","  Tab         ペイン切替    Shift-Tab: 逆方向","  d / e       Source/Assembly切替 / 実行位置へ戻る","  o           関数 / ファイルを開く","  Ctrl-G      プロジェクト全体を検索","  [ / Ctrl-o  閲覧履歴を戻る    ]: 進む","              履歴は表示のみ変更。fはプログラムを実行","","停止条件","  b / B / F   Breakpoint / 条件付き / 関数","  C / w / S   Catchpoint / Watchpoint / 停止条件一覧","","ペイン","  変数         Enter 展開、p 値、a アドレス、E 編集","  レジスタ     p 詳細、E 編集","  スタック     Enterでフレーム選択と位置移動","","モード / その他","  F2          GDB / 読み取り専用VIMモード","  L           表示言語を切り替え（GDBモード）","  VIM         h/j/k/l、/?、n/N、gd/gD、*#、%","  O           プログラム出力","  ?           ヘルプ    q: 終了",NULL};const char**lines=ui_japanese?japanese:english;int count=0;while(lines[count])count++;WINDOW*window=create_popup(tui_text("Help","ヘルプ"),count+2,76);if(!window)return;int height,width;getmaxyx(window,height,width);for(int i=0;i<count&&i+1<height-1;i++){if(lines[i][0]&&!isspace((unsigned char)lines[i][0]))wattron(window,A_BOLD);add_clipped(window,i+1,2,lines[i],width-4);wattroff(window,A_BOLD);}wnoutrefresh(window);delwin(window);}
 static void draw_output(Gdb*g){erase();attron(A_BOLD);clipped(0,2,getmaxx(stdscr)-4,"%s",tui_text("Program Output","プログラム出力"));attroff(A_BOLD);int rows,cols;getmaxyx(stdscr,rows,cols);int y=2;const char*p=g->output;while(*p&&y<rows-2){const char*e=strchr(p,'\n');int n=e?(int)(e-p):(int)strlen(p);mvaddnstr(y++,1,p,n<cols-2?n:cols-2);if(!e)break;p=e+1;}clipped(rows-1,2,cols-4,"%s",tui_text("Esc / o: Back","Esc / o: 戻る"));refresh();}
 static void draw_address(const AddressPanel*p){int rows,cols;getmaxyx(stdscr,rows,cols);erase();int width=cols-4;if(width>76)width=76;if(width<36)width=cols;int height=p->info.pointer?10+p->match_count:7;if(p->info.pointer&&!p->match_count)height=11;if(height>rows-2)height=rows-2;if(height<7)height=7;int x=(cols-width)/2,y=(rows-height)/2;if(x<0)x=0;if(y<0)y=0;attron(COLOR_PAIR(COLOR_INFO)|A_BOLD);mvaddch(y,x,ACS_ULCORNER);mvhline(y,x+1,ACS_HLINE,width-2);mvaddch(y,x+width-1,ACS_URCORNER);for(int r=1;r<height-1;r++){mvaddch(y+r,x,ACS_VLINE);mvaddch(y+r,x+width-1,ACS_VLINE);}mvaddch(y+height-1,x,ACS_LLCORNER);mvhline(y+height-1,x+1,ACS_HLINE,width-2);mvaddch(y+height-1,x+width-1,ACS_LRCORNER);const char*title=p->info.pointer?tui_text(" Pointer Details "," ポインタ詳細 "):tui_text(" Address "," アドレス ");centered_title(y,x,width,title);attroff(COLOR_PAIR(COLOR_INFO)|A_BOLD);int row=y+2;clipped(row++,x+2,width-4,tui_text("Expression : %s","式         : %s"),p->info.expression);clipped(row++,x+2,width-4,tui_text("Type       : %s","型         : %s"),p->info.type);if(p->info.pointer){clipped(row++,x+2,width-4,tui_text("Address    : %s","アドレス   : %s"),p->info.address);clipped(row++,x+2,width-4,tui_text("Points to  : %s","参照先     : %s"),p->info.points_to);row++;attron(A_BOLD|COLOR_PAIR(COLOR_WATCH));clipped(row++,x+2,width-4,"%s",p->match_count==1?tui_text("Matched variable:","一致する変数:"):tui_text("Matched variables:","一致する変数:") );attroff(A_BOLD|COLOR_PAIR(COLOR_WATCH));if(!p->match_count){clipped(row++,x+4,width-6,"%s",tui_text("not found","見つかりません"));}else for(int i=0;i<p->match_count&&row<y+height-1;i++)clipped(row++,x+4,width-6,"%s",p->matches[i]);}else{clipped(row++,x+2,width-4,tui_text("Value      : %s","値         : %s"),p->info.value);clipped(row++,x+2,width-4,tui_text("Address    : %s","アドレス   : %s"),p->info.address);}clipped(rows-1,2,cols-4,"%s",tui_text("Esc / a / Enter: Back","Esc / a / Enter: 戻る"));refresh();}
 static void build_register_panel(const GdbRegister*r,RegisterPanel*p){memset(p,0,sizeof(*p));snprintf(p->name,sizeof(p->name),"%s",r->name);snprintf(p->value,sizeof(p->value),"%s",r->value);char*end=NULL;p->numeric=strtoull(r->value,&end,0);p->numeric_available=end&&end!=r->value&&(*end=='\0'||isspace((unsigned char)*end));}
@@ -530,6 +530,99 @@ static bool prompt_text(const char *label,char *out,size_t size){
     return accepted;
 }
 static bool confirm_quit(const Gdb*g){char a[8]="";return prompt_text(g->attached_pid?tui_text("Detach and leave the process running? [y/N] ","接続を解除してプロセスを続行しますか？ [y/N] "):tui_text("Debuggee is active. Quit? [y/N] ","デバッグ対象が動作中です。終了しますか？ [y/N] "),a,sizeof(a))&&(a[0]=='y'||a[0]=='Y');}
+
+#define UI_MAX_SEARCH_HITS 1024
+typedef struct {int file,line,column,break_line;char text[512];} ProjectSearchHit;
+
+static void project_search(Gdb *g,const char *root,Source *source,SourceHistory *history,
+                           int *cursor,int *column,int *top,int *hscroll,
+                           CodeView *code_view,PaneFocus *focus,char *last_search,size_t search_size,
+                           bool *search_active,bool *whole_word){
+    static FileDialog files;
+    static ProjectSearchHit hits[UI_MAX_SEARCH_HITS];
+    char query[256]="";
+    if(g->state==GDB_RUNNING){snprintf(g->message,sizeof(g->message),"%s",tui_text("Stop the program before project search","プロジェクト検索の前にプログラムを停止してください"));return;}
+retry_search:
+    if(!prompt_text(tui_text("Project search (literal): ","プロジェクト検索（文字列）: "),query,sizeof(query)))return;
+    load_file_dialog(g,root,&files);
+    int count=0,skipped=0;bool limited=false;
+    for(int i=0;i<files.all_count;i++){
+        FILE *file=fopen(files.all[i].path,"r");
+        if(!file){skipped++;continue;}
+        struct stat st;
+        if(fstat(fileno(file),&st)||st.st_size>8*1024*1024){skipped++;fclose(file);continue;}
+        char *line=NULL;size_t capacity=0;ssize_t length;int line_number=0;
+        while((length=getline(&line,&capacity,file))>=0){
+            line_number++;
+            /* Source searches are literal and case-sensitive, one result per line. */
+            char *match=strstr(line,query);
+            if(!match)continue;
+            if(count>=UI_MAX_SEARCH_HITS){limited=true;break;}
+            ProjectSearchHit *hit=&hits[count++];
+            hit->file=i;hit->line=line_number;hit->column=(int)(match-line);hit->break_line=0;
+            while(length>0&&(line[length-1]=='\n'||line[length-1]=='\r'))line[--length]=0;
+            /* Keep the match visible even on a very long source line. */
+            int start=hit->column>80?hit->column-80:0;
+            snprintf(hit->text,sizeof(hit->text),"%s%s",start?"...":"",line+start);
+        }
+        if(ferror(file))skipped++;
+        free(line);fclose(file);
+        if(limited)break;
+    }
+    int selected=0,result_top=0;
+    char message[GD_TEXT_MAX]="";
+    for(;;){
+        int rows,cols;getmaxyx(stdscr,rows,cols);erase();
+        attron(A_BOLD|COLOR_PAIR(COLOR_INFO));
+        clipped(0,1,cols-2,tui_text("Project search: %s  (%d matching lines)","プロジェクト検索: %s  （%d行一致）"),query,count);
+        attroff(A_BOLD|COLOR_PAIR(COLOR_INFO));
+        clipped(1,1,cols-2,tui_text("Root: %s","検索範囲: %s"),root);
+        clipped(2,1,cols-2,tui_text("%d source files; skipped %d%s%s","対象%dファイル・読み飛ばし%d%s%s"),files.all_count,skipped,
+                limited?tui_text("; result limit 1024 reached","・結果上限1024件"):"",
+                files.all_count==UI_MAX_SOURCE_FILES?tui_text("; file limit 512 reached","・ファイル上限512件"):"");
+        line_rule(3,NULL);
+        int page=rows-7;if(page<1)page=1;
+        if(selected<result_top)result_top=selected;
+        if(selected>=result_top+page)result_top=selected-page+1;
+        if(!count)clipped(5,2,cols-4,"%s",tui_text("No matches in project C/C++ sources and headers.","プロジェクトのC/C++ソース・ヘッダーに一致する行がありません。"));
+        for(int row=0;row<page&&result_top+row<count;row++){
+            int index=result_top+row;ProjectSearchHit *hit=&hits[index];SourceFileCandidate *file=&files.all[hit->file];
+            int location_width=cols/3;
+            if(index==selected)attron(A_REVERSE);
+            clipped(4+row,1,location_width-1,"%c %c [%s] %s:%d",index==selected?'>':' ',breakpoint_mark(g,file->path,hit->break_line?hit->break_line:hit->line)?'B':' ',file->debug_lines?"D":"R",file->display,hit->line);
+            clipped(4+row,location_width+1,cols-location_width-2,"%s",hit->text);
+            if(index==selected)attroff(A_REVERSE);
+        }
+        line_rule(rows-3,NULL);
+        clipped(rows-2,1,cols-2,"%s",tui_text("j/k or arrows: select  Enter: open  b: breakpoint  /: new search  Esc: back  [D] debug [R] reference","j/k・↑↓ 選択  Enter 移動  b Breakpoint  / 再検索  Esc 戻る  [D]デバッグ [R]参照"));
+        clipped(rows-1,1,cols-2,"%s",message);refresh();
+        int ch=getch();if(ch==ERR)continue;
+        if(ch==27)break;
+        if((ch=='j'||ch==KEY_DOWN)&&selected+1<count)selected++;
+        else if((ch=='k'||ch==KEY_UP)&&selected>0)selected--;
+        else if(ch==KEY_NPAGE){selected+=page;if(selected>=count)selected=count?count-1:0;}
+        else if(ch==KEY_PPAGE){selected-=page;if(selected<0)selected=0;}
+        else if(ch=='/')goto retry_search;
+        else if(count&&(ch=='\n'||ch==KEY_ENTER||ch=='b')){
+            ProjectSearchHit *hit=&hits[selected];SourceFileCandidate *file=&files.all[hit->file];
+            if(ch=='b'){
+                if(!file->debug_lines)snprintf(message,sizeof(message),"%s",tui_text("No debug line info: use a function or address breakpoint","デバッグ行情報なし。関数またはアドレスBreakpointを使用してください"));
+                else{
+                    int oldmax=newest_break_number(g);
+                    if(!gdb_toggle_breakpoint(g,file->path,hit->break_line?hit->break_line:hit->line)){
+                        int actual=new_break_line(g,file->path,oldmax);if(actual>0)hit->break_line=actual;
+                    }
+                    snprintf(message,sizeof(message),"%s",g->message);
+                }
+            }else if(source_navigate(source,history,file->path,hit->line,cursor,column,top,hscroll,file->debug_lines,true)){
+                *code_view=CODE_SOURCE;*focus=PANE_SOURCE;*column=hit->column;clamp_column(source,*cursor,column);
+                snprintf(last_search,search_size,"%s",query);*search_active=false;*whole_word=false;
+                snprintf(g->message,sizeof(g->message),tui_text("Search result: %s:%d","検索結果: %s:%d"),file->display,hit->line);break;
+            }else snprintf(message,sizeof(message),"%s",tui_text("Source file is no longer available","ソースファイルを開けません"));
+        }
+    }
+    touchwin(stdscr);
+}
 int main(int argc,char**argv){
     setlocale(LC_ALL,"");
     Language language=LANGUAGE_AUTO;int first=1;pid_t attach_pid=0;
@@ -726,6 +819,7 @@ int main(int argc,char**argv){
                      tui_text("Search and highlights cleared","検索とハイライトを解除しました"));
             continue;
         }
+        if(ch==7){project_search(&g,project_root,&src,&history,&cursor,&source_col,&top,&hscroll,&code_view,&focus,last_search,sizeof(last_search),&search_active,&search_whole_word);continue;}
         if(ch=='\t'){focus=cycle_focus(focus,code_view,1);snprintf(g.message,sizeof(g.message),tui_text("Focus: %s","フォーカス: %s"),focus_name(focus));continue;}
         if(ch==KEY_BTAB){focus=cycle_focus(focus,code_view,-1);snprintf(g.message,sizeof(g.message),tui_text("Focus: %s","フォーカス: %s"),focus_name(focus));continue;}
         if(ch==KEY_F(2)){mode=mode==MODE_VIM?MODE_GDB:MODE_VIM;search_active=false;vim_count=0;snprintf(g.message,sizeof(g.message),"%s",mode==MODE_VIM?tui_text("VIM navigation mode","VIM操作モード"):tui_text("GDB control mode","GDB操作モード"));continue;}

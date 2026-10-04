@@ -5,10 +5,10 @@ LDFLAGS ?=
 LDLIBS ?= -lncursesw
 
 TARGET := strace-src
-SOURCES := main.c parser.c resolve.c filters.c trace_file.c fd_tracker.c
+SOURCES := main.c parser.c resolve.c resolve_cache.c filters.c trace_file.c fd_tracker.c
 OBJECTS := $(SOURCES:.c=.o)
 
-.PHONY: all clean test example install uninstall
+.PHONY: all clean test perf perf-ui example install uninstall
 
 all: $(TARGET)
 
@@ -17,6 +17,9 @@ $(TARGET): $(OBJECTS)
 
 %.o: %.c strace_src.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+main.o fd_tracker.o: fd_tracker.h
+main.o resolve.o resolve_cache.o: resolve_cache.h
 
 tests/parser_test: tests/parser_test.c parser.c strace_src.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/parser_test.c parser.c
@@ -30,17 +33,17 @@ tests/process_fixture: tests/process_fixture.c
 tests/fd_fixture: tests/fd_fixture.c
 	$(CC) $(CFLAGS) -g -O0 -fno-omit-frame-pointer -o $@ $<
 
-tests/resolve_test: tests/resolve_test.c resolve.c strace_src.h tests/fixture
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/resolve_test.c resolve.c
+tests/resolve_test: tests/resolve_test.c resolve.c resolve_cache.c resolve_cache.h strace_src.h tests/fixture
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/resolve_test.c resolve.c resolve_cache.c
 
-tests/filter_test: tests/filter_test.c filters.c resolve.c strace_src.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/filter_test.c filters.c resolve.c
+tests/filter_test: tests/filter_test.c filters.c resolve.c resolve_cache.c resolve_cache.h strace_src.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/filter_test.c filters.c resolve.c resolve_cache.c
 
-tests/trace_file_test: tests/trace_file_test.c trace_file.c parser.c resolve.c strace_src.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/trace_file_test.c trace_file.c parser.c resolve.c
+tests/trace_file_test: tests/trace_file_test.c trace_file.c parser.c resolve.c resolve_cache.c resolve_cache.h strace_src.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/trace_file_test.c trace_file.c parser.c resolve.c resolve_cache.c
 
-tests/fd_tracker_test: tests/fd_tracker_test.c fd_tracker.c filters.c resolve.c parser.c strace_src.h fd_tracker.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/fd_tracker_test.c fd_tracker.c filters.c resolve.c parser.c
+tests/fd_tracker_test: tests/fd_tracker_test.c fd_tracker.c filters.c resolve.c resolve_cache.c resolve_cache.h parser.c strace_src.h fd_tracker.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/fd_tracker_test.c fd_tracker.c filters.c resolve.c resolve_cache.c parser.c
 
 test: $(TARGET) tests/parser_test tests/fixture tests/fd_fixture tests/resolve_test tests/filter_test tests/trace_file_test tests/fd_tracker_test
 	./tests/parser_test
@@ -54,6 +57,15 @@ test: $(TARGET) tests/parser_test tests/fixture tests/fd_fixture tests/resolve_t
 example: $(TARGET)
 	$(MAKE) -C examples/shared-library
 
+tests/resolve_performance: tests/resolve_performance.c resolve.c resolve_cache.c resolve_cache.h strace_src.h tests/fixture
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/resolve_performance.c resolve.c resolve_cache.c
+
+perf: tests/resolve_performance
+	./tests/resolve_performance
+
+perf-ui: $(TARGET) tests/fd_fixture
+	python3 tests/perf_idle.py
+
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(DESTDIR)/usr/local/bin/$(TARGET)
 
@@ -62,4 +74,5 @@ uninstall:
 
 clean:
 	rm -f $(TARGET) $(OBJECTS) tests/parser_test tests/resolve_test tests/filter_test tests/trace_file_test tests/fd_tracker_test tests/fixture tests/process_fixture tests/fd_fixture
+	rm -f tests/resolve_performance
 	$(MAKE) -C examples/shared-library clean

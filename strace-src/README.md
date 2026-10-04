@@ -143,3 +143,21 @@ that no longer exists, it displays `Source unavailable`.
 
 The focused pane title is shown in bold. Source remains read-only when focused;
 trace navigation and filter shortcuts continue to work from either pane.
+
+## Performance checks
+
+Source resolution shares a bounded, 4096-entry cache across trace events,
+including addresses without debug locations. Binary identity and modification
+timestamps are checked before reuse, so a rebuilt binary invalidates its cached
+results. The TUI redraws only after input, resize, or trace changes. Trace input
+is read in bounded batches to allow keyboard handling during continuous output.
+
+```sh
+make perf       # compare uncached and cached resolution of 200 identical frames
+make perf-ui    # PTY idle-redraw and Japanese/English UI checks (requires python3)
+python3 tests/perf_idle.py --baseline /path/to/previous/strace-src
+```
+
+The resolution benchmark measures repeated address lookups, not end-to-end
+tracing speed. The UI check reports idle CPU time and terminal bytes and asserts
+that an unchanged popup produces no terminal output.

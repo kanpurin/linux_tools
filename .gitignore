@@ -15,6 +15,7 @@ strace-src/tests/fd_tracker_test
 strace-src/tests/fixture
 strace-src/tests/process_fixture
 strace-src/tests/fd_fixture
+strace-src/tests/resolve_performance
 strace-src/*.trace
 strace-src/examples/shared-library/shared-demo
 strace-src/examples/shared-library/*.so

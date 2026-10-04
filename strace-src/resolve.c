@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "strace_src.h"
+#include "resolve_cache.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -52,7 +53,8 @@ static bool addr2line_lookup(const StackFrame *frame, char **function_out,
                              char **path_out, int *line_out) {
     int fds[2];
     pid_t pid;
-    int status;
+    int status = 0;
+    pid_t waited;
     char output[8192];
     char *first;
     char *second;
@@ -86,9 +88,10 @@ static bool addr2line_lookup(const StackFrame *frame, char **function_out,
     close(fds[1]);
     read_all(fds[0], output, sizeof(output));
     close(fds[0]);
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-    }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         return false;
     }
     first = output;
@@ -134,12 +137,15 @@ static bool addr2line_lookup(const StackFrame *frame, char **function_out,
 
 bool stack_frame_resolve(StackFrame *frame) {
     if (frame->resolution_state != 0) return frame->resolution_state == 1;
+    if (resolve_cache_get(frame)) return frame->resolution_state == 1;
     if (addr2line_lookup(frame, &frame->source_function, &frame->source_path,
                          &frame->source_line)) {
         frame->resolution_state = 1;
+        resolve_cache_put(frame);
         return true;
     }
     frame->resolution_state = 2;
+    resolve_cache_put(frame);
     return false;
 }
 

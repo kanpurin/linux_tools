@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "strace_src.h"
 #include "fd_tracker.h"
+#include "resolve_cache.h"
 
 #include <ctype.h>
 #include <curses.h>
@@ -98,6 +99,7 @@ typedef struct {
     size_t visible_count;
     size_t visible_cap;
     bool view_dirty;
+    bool render_dirty;
     char search[256];
     char syscalls[16384];
     bool syscall_filter_active;
@@ -470,6 +472,7 @@ static ThreadIdentity *remember_identity(App *app, int tid, int pid, const char 
 
 static void feed_line(App *app, const char *line) {
     FeedResult result = trace_model_feed_line(&app->model, line);
+    if (result != FEED_IGNORED) app->render_dirty = true;
     if (result == FEED_NEW_EVENT) {
         TraceEvent *event = &app->model.events[app->model.count - 1];
         ThreadIdentity *known = find_identity(app, event->tid);
@@ -524,20 +527,26 @@ static void process_complete_lines(App *app, bool flush) {
 static void read_trace(App *app) {
     char buffer[16384];
     ssize_t got;
+    size_t bytes = 0;
     if (app->trace_done) return;
     for (;;) {
         got = read(app->trace_fd, buffer, sizeof(buffer));
         if (got > 0) {
             pending_append(app, buffer, (size_t)got);
             process_complete_lines(app, false);
+            bytes += (size_t)got;
+            /* Yield to input and drawing even when a producer never pauses. */
+            if (bytes >= 128 * 1024) break;
         } else if (got == 0) {
             process_complete_lines(app, true);
             close(app->trace_fd);
             app->trace_fd = -1;
             app->trace_done = true;
+            app->render_dirty = true;
             break;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
             app->trace_done = true;
+            app->render_dirty = true;
             break;
         } else {
             break;
@@ -2005,6 +2014,7 @@ static void cleanup(App *app) {
     clear_choices(app);
     source_file_clear(&app->source);
     trace_model_free(&app->model);
+    resolve_cache_clear();
 }
 
 int main(int argc, char **argv) {
@@ -2039,6 +2049,7 @@ int main(int argc, char **argv) {
     app.source_override_event = -1;
     app.follow_latest = true;
     app.view_dirty = true;
+    app.render_dirty = true;
     app.save_path = cli.save_path;
     trace_model_init(&app.model);
     if (cli.replay) {
@@ -2075,10 +2086,15 @@ int main(int argc, char **argv) {
         read_trace(&app);
         if (app.strace_pid > 0 && waitpid(app.strace_pid, &status, WNOHANG) == app.strace_pid)
             app.strace_pid = -1;
-        draw(&app);
-        draw_popup(&app);
-        doupdate();
+        if (app.render_dirty) {
+            draw(&app);
+            draw_popup(&app);
+            doupdate();
+            app.render_dirty = false;
+        }
         key = getch();
+        if (key == ERR) continue;
+        app.render_dirty = true;
         if (app.popup != POPUP_NONE) {
             handle_popup(&app, key);
             continue;

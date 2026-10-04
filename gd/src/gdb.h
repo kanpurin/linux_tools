@@ -16,15 +16,13 @@
 #define GD_MAX_FUNCTIONS 256
 #define GD_MAX_CATCH_CANDIDATES 512
 
-typedef enum {
-    GDB_NOT_STARTED,
-    GDB_RUNNING,
-    GDB_STOPPED,
-    GDB_EXITED,
-    GDB_FAILED
-} GdbState;
+typedef enum { GDB_NOT_STARTED, GDB_RUNNING, GDB_STOPPED, GDB_EXITED, GDB_FAILED } GdbState;
 
-typedef struct { char name[128]; char value[GD_TEXT_MAX]; char type[256]; } GdbVar;
+typedef struct {
+    char name[128];
+    char value[GD_TEXT_MAX];
+    char type[256];
+} GdbVar;
 typedef struct {
     char expression[512];
     char name[128];
@@ -99,12 +97,17 @@ typedef struct {
 
 typedef struct {
     pid_t pid;
+    struct GdbCache *cache;
+    unsigned long data_revision, variables_revision, symbol_revision;
+    bool frames_valid;
+    bool defer_disassembly;
+    bool function_results_complete;
     pid_t attached_pid;
     int to_gdb;
     int from_gdb;
     int token;
-    char readbuf[65536];
-    size_t readlen;
+    char *readbuf;
+    size_t readlen, readcap;
     GdbState state;
     char executable[GD_PATH_MAX];
     char fullname[GD_PATH_MAX];
@@ -128,10 +131,14 @@ typedef struct {
     int current_instruction;
     GdbRegister registers[GD_MAX_REGISTERS];
     int register_count;
+    char register_names[256][32];
+    int register_name_count;
+    bool register_names_valid;
     GdbBreakpoint breaks[GD_MAX_BREAKS];
     int break_count;
     char output[32768];
     size_t output_len;
+    unsigned long output_revision;
     char message[GD_TEXT_MAX];
     char stop_reason[128];
     char watch_old[GD_TEXT_MAX];
@@ -162,34 +169,32 @@ int gdb_toggle_breakpoint(Gdb *g, const char *file, int line);
 int gdb_set_cond_breakpoint(Gdb *g, const char *file, int line, const char *condition);
 int gdb_set_function_breakpoint(Gdb *g, const char *function);
 int gdb_set_catchpoint(Gdb *g, const char *event, const char *target);
-int gdb_list_catch_candidates(Gdb *g, const char *event, const char *filter,
-                              char candidates[][128], int max_candidates,
-                              int *candidate_count);
+int gdb_list_catch_candidates(Gdb *g, const char *event, const char *filter, char candidates[][128],
+                              int max_candidates, int *candidate_count);
 int gdb_toggle_address_breakpoint(Gdb *g, const char *address);
-int gdb_list_functions(Gdb *g, const char *filter, GdbFunction *functions,
-                       int max_functions, int *function_count);
-int gdb_list_source_files(Gdb *g, GdbSourceFile *files, int max_files,
-                          int *file_count);
+int gdb_list_functions(Gdb *g, const char *filter, GdbFunction *functions, int max_functions,
+                       int *function_count);
+int gdb_list_source_files(Gdb *g, GdbSourceFile *files, int max_files, int *file_count);
 int gdb_disassemble_at(Gdb *g, const char *address);
 int gdb_watch(Gdb *g, const char *expression);
 int gdb_print(Gdb *g, const char *expression, char *out, size_t out_size);
-int gdb_assign_expression(Gdb *g, const char *expression, const char *new_value,
-                          char *actual, size_t actual_size);
-int gdb_assign_register(Gdb *g, const char *name, const char *new_value,
-                        char *actual, size_t actual_size);
-int gdb_current_return_type(Gdb *g, char *type, size_t type_size,
-                            bool *is_void);
+int gdb_assign_expression(Gdb *g, const char *expression, const char *new_value, char *actual,
+                          size_t actual_size);
+int gdb_assign_register(Gdb *g, const char *name, const char *new_value, char *actual,
+                        size_t actual_size);
+int gdb_current_return_type(Gdb *g, char *type, size_t type_size, bool *is_void);
 int gdb_force_return(Gdb *g, const char *value);
 int gdb_inspect_address(Gdb *g, const char *expression, GdbAddressInfo *info);
-int gdb_expression_address(Gdb *g, const char *expression, char *address,
-                           size_t address_size);
+int gdb_expression_address(Gdb *g, const char *expression, char *address, size_t address_size);
 int gdb_delete_breakpoint(Gdb *g, int number);
 int gdb_enable_breakpoint(Gdb *g, int number, bool enable);
 int gdb_refresh(Gdb *g);
+int gdb_refresh_variables(Gdb *g);
+void gdb_ensure_disassembly(Gdb *g);
 int gdb_refresh_breakpoints(Gdb *g);
-int gdb_list_children(Gdb *g, const char *expression, GdbChild *children,
-                      int max_children, int *child_count);
-int gdb_scope_candidates(Gdb *g, const char *file, int line, const char *parent,
-                         GdbChild *items, int max_items, int *count);
+int gdb_list_children(Gdb *g, const char *expression, GdbChild *children, int max_children,
+                      int *child_count);
+int gdb_scope_candidates(Gdb *g, const char *file, int line, const char *parent, GdbChild *items,
+                         int max_items, int *count);
 
 #endif

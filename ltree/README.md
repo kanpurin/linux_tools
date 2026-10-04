@@ -4,6 +4,8 @@ Linux/POSIX環境向けの軽量な `ltree` コマンドです。ディレクト
 
 ## Build
 
+実装は `ltree.c`（実行の流れ）、`options.c`（オプション解析）、`format.c`（表示・列幅計測）、`listing.c`（走査・ソート・合計サイズ）に分かれています。モジュール間の型と関数宣言は `ltree.h` にまとめています。
+
 ```sh
 make
 ```

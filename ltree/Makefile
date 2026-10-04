@@ -9,8 +9,10 @@ BINDIR ?= $(PREFIX)/bin
 
 all: ltree
 
-ltree: ltree.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c11 -D_DEFAULT_SOURCE -o $@ $< $(LDFLAGS)
+SOURCES = ltree.c options.c format.c listing.c
+
+ltree: $(SOURCES) ltree.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c11 -D_DEFAULT_SOURCE -o $@ $(SOURCES) $(LDFLAGS)
 
 install: ltree
 	install -d "$(DESTDIR)$(BINDIR)"

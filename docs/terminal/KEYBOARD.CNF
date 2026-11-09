@@ -161,9 +161,9 @@ LineUp=off
 ; Ctrl + down-arrow
 LineDown=off
 ; Ctrl + PageUp
-PageUp=1353
+PageUp=off
 ; Ctrl + PageDown
-PageDown=1361
+PageDown=off
 ; Ctrl + Home
 BuffTop=1351
 ; Ctrl + End
@@ -207,3 +207,7 @@ User1=1355,0,$1B[1;5D
 User2=1357,0,$1B[1;5C
 User3=1352,0,$1B[1;5A
 User4=1360,0,$1B[1;5B
+
+; Ctrl+PageUp/PageDown: tmux window navigation
+User5=1353,0,$1B[5;5~
+User6=1361,0,$1B[6;5~

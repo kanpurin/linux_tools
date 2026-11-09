@@ -65,6 +65,18 @@ User4=1360,0,$1B[1;5B
 ［設定］→［キーマップの読み込み］（Load key map）で修正したファイルを読み込む。
 再起動後は標準の `KEYBOARD.CNF` が読み込まれる（別ファイルを起動引数で指定している場合を除く）。
 
+Ctrl＋PageUp/PageDownでウィンドウを切り替える設定も追加済み。
+`[Shortcut keys]` の `PageUp=off`、`PageDown=off` でTera Termのローカルスクロール割り当てを解除し、
+`[User keys]` に以下を追加している。
+
+```ini
+User5=1353,0,$1B[5;5~
+User6=1361,0,$1B[6;5~
+```
+
+tmux側は `bind -n C-PPage previous-window` と `bind -n C-NPage next-window`。
+設定後はLoad key mapで再読み込みする。PTYで両方向のウィンドウ切り替えを検証済み。
+
 今回の実行ファイルは `C:\Program Files\teraterm5\ttermpro.exe`。
 `KEYCODE.EXE` も同じフォルダーの `keycode.exe` として存在した。見つからない場合は、実際のインストール先を確認する。
 
@@ -75,6 +87,7 @@ User4=1360,0,$1B[1;5B
 | 操作 | キー |
 |---|---|
 | ペイン移動 | Ctrl＋矢印 |
+| 前のウィンドウ／次のウィンドウ | Ctrl＋PageUp / Ctrl＋PageDown |
 | Vim風ペイン移動 | Ctrl+B → h / j / k / l |
 | 左右分割 | Ctrl+B → \| |
 | 上下分割 | Ctrl+B → - |

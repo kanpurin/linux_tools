@@ -161,13 +161,13 @@ LineUp=off
 ; Ctrl + down-arrow
 LineDown=off
 ; Ctrl + PageUp
-PageUp=off
+PageUp=1353
 ; Ctrl + PageDown
-PageDown=off
+PageDown=1361
 ; Ctrl + Home
-BuffTop=1351
+BuffTop=off
 ; Ctrl + End
-BuffBottom=1359
+BuffBottom=off
 ; Ctrl + Tab
 NextWin=1039
 NextShownWin=off
@@ -208,6 +208,6 @@ User2=1357,0,$1B[1;5C
 User3=1352,0,$1B[1;5A
 User4=1360,0,$1B[1;5B
 
-; Ctrl+PageUp/PageDown: tmux window navigation
-User5=1353,0,$1B[5;5~
-User6=1361,0,$1B[6;5~
+; Ctrl+Home/End: tmux window navigation
+User5=1351,0,$1B[1;5H
+User6=1359,0,$1B[1;5F

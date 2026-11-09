@@ -3,15 +3,17 @@
 2026-11-09時点。WindowsのTera Term 5.6.1からUbuntu 22.04上のtmux 3.2aを使用する環境で確認。
 目的はプレフィックスなしのCtrl＋矢印によるペイン移動と、操作・表示・コピーの改善。
 
-## 収録ファイル
+## ファイルの役割
 
-| ファイル | 内容 |
+| ファイル | 役割・配置先 |
 |---|---|
-| [tmux.conf](tmux.conf) | VMの `/root/.tmux.conf` の実ファイルのコピー |
-| [KEYBOARD.CNF](KEYBOARD.CNF) | Windows側で修正済みのキーマップ全体（UTF-8で収録） |
-| [bashrc-flow-control.sh](bashrc-flow-control.sh) | `.bashrc` に追加したフロー制御対策。追記用の抜粋 |
-| [teraterm-settings.ini.example](teraterm-settings.ini.example) | INIに反映する設定項目だけの参考例。全体の置き換え用ではない |
-| [copy-tmux-buffer.ps1](../../copy-tmux-buffer.ps1) | 長文コピーの任意の補助スクリプト |
+| [.tmux.conf](.tmux.conf) | tmuxの設定本体。VMの `/root/.tmux.conf` に配置する内容の保管用コピー |
+| [KEYBOARD.CNF](KEYBOARD.CNF) | Tera Termのキーマップ。Windowsの `%APPDATA%\teraterm5\KEYBOARD.CNF` に取り込む内容（UTF-8で収録） |
+| [copy-tmux-buffer.ps1](copy-tmux-buffer.ps1) | 長文が欠ける場合のみ使うWindows用の補助スクリプト。通常のコピーには不要 |
+
+VM上のtmuxが実際に読み込むのは `/root/.tmux.conf`。この資料フォルダー内のファイルは自動では適用されない。
+既存環境は設定済みなので、再配置やスクリプト実行は不要。
+`.bashrc` への追記とTera Termの手動設定は以下の手順へ集約している。
 
 実環境の `.bashrc` や `TERATERM.INI` 全体、秘密鍵、パスワード、接続履歴は収録していない。
 
@@ -128,7 +130,7 @@ Ambiguous Characters widthを **1 Cell** に変更し、右クリックメニュ
 tmuxで `y` により選択内容をコピーした後、Windows PowerShellで実行する。
 
 ```powershell
-& "C:\path\to\linux_tools\copy-tmux-buffer.ps1"
+& "C:\path\to\linux_tools\docs\terminal\copy-tmux-buffer.ps1"
 ```
 
 Windows標準の `ssh.exe` で `virtualbox-linux` に接続し、`tmux save-buffer -` の内容を

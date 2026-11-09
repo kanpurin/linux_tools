@@ -88,6 +88,7 @@ tmux側は `bind -n C-Home previous-window` と `bind -n C-End next-window`。
 |---|---|
 | ペイン移動 | Ctrl＋矢印 |
 | 前のウィンドウ／次のウィンドウ | Ctrl＋Home / Ctrl＋End |
+| 番号指定でウィンドウ移動 | Ctrl＋1〜9（キーボード上段の数字） |
 | Vim風ペイン移動 | Ctrl+B → h / j / k / l |
 | 左右分割 | Ctrl+B → \| |
 | 上下分割 | Ctrl+B → - |
@@ -99,6 +100,12 @@ tmux側は `bind -n C-Home previous-window` と `bind -n C-End next-window`。
 | tmux内のコピーを貼り付け | Ctrl+B → ] |
 
 マウス有効、履歴50,000行、番号は1から開始、ウィンドウ削除時に番号を詰める。
+Ctrl＋数字は既存の番号へ移動する操作で、ウィンドウの新規作成はしない。
+Tera TermのUser7〜User15にキーコード1026〜1034を割り当て、
+`ESC [ 9001 ~`〜`ESC [ 9009 ~`を送る。tmuxの `user-keys[0]`〜`user-keys[8]` が受け取り、
+`User0`〜`User8` から `select-window -t :1`〜`:9` を実行する。
+設定ファイル変更後はTera TermのLoad key mapで再読み込みする。
+9番号すべての送信列による移動を一時tmuxとPTYで検証済み。
 端末種別は `screen-256color`、Esc判定は10ms、コピーモードはvi操作。
 ステータスバーは下部、2秒更新。現在のウィンドウは黒文字・緑背景・太字。
 ペイン境界は通常グレー、アクティブは水色。

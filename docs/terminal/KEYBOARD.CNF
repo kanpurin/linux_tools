@@ -211,3 +211,14 @@ User4=1360,0,$1B[1;5B
 ; Ctrl+Home/End: tmux window navigation
 User5=1351,0,$1B[1;5H
 User6=1359,0,$1B[1;5F
+
+; Ctrl+1..9: tmux window selection (number row)
+User7=1026,0,$1B[9001~
+User8=1027,0,$1B[9002~
+User9=1028,0,$1B[9003~
+User10=1029,0,$1B[9004~
+User11=1030,0,$1B[9005~
+User12=1031,0,$1B[9006~
+User13=1032,0,$1B[9007~
+User14=1033,0,$1B[9008~
+User15=1034,0,$1B[9009~

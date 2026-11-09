@@ -2,6 +2,9 @@
 
 Linux 向け TUI ツール集です。
 
+Tera Termとtmuxの設定・キー操作・クリップボード連携の記録は
+[端末環境の設定資料](docs/terminal/README.md)を参照してください。
+
 ## Tools
 
 - `procview/` - C/ncurses 製プロセスビューアー

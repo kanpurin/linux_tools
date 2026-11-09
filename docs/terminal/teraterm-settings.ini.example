@@ -1,0 +1,7 @@
+; Reference only: merge these settings into the existing [Tera Term] section.
+; Do not replace TERATERM.INI with this partial file.
+[Tera Term]
+TermType=xterm
+ClipboardAccessFromRemote=write
+; Desired setting; the inspected saved INI still had 2 (see README).
+UnicodeAmbiguousWidth=1
